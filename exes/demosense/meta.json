@@ -1,0 +1,37 @@
+{
+  "slug": "demosense",
+  "name": "demosense",
+  "source": {
+    "type": "qq",
+    "accountUin": "3250805091",
+    "peerUin": "2110124650",
+    "peerUid": "u_4DzpCSR24d_usVY5hX06EA",
+    "transcript": "C:\\Users\\HUAWEI\\Desktop\\Code\\ex-skill-main\\input\\qce\\demosense_2110124650_all_transcript.txt",
+    "raw": "C:\\Users\\HUAWEI\\Desktop\\Code\\ex-skill-main\\input\\qce\\demosense_2110124650_all_raw.json",
+    "messageCount": 19870,
+    "timeRange": {
+      "first": "2023-10-18 18:05:03",
+      "last": "2025-01-25 22:48:51"
+    }
+  },
+  "profile": {
+    "relationship": "former-partner style memory object, distilled from QQ chat logs",
+    "city": "[unknown]",
+    "occupation": "student-era / school-context contact inferred from records",
+    "mbti": "[unknown]",
+    "zodiac": "[unknown]",
+    "coreTags": [
+      "short-message burst",
+      "late-night active",
+      "practical care",
+      "polite burden-awareness",
+      "dry humor",
+      "restrained affection",
+      "direct disgust when boundaries are crossed",
+      "image-heavy"
+    ]
+  },
+  "created_at": "2026-05-09",
+  "updated_at": "2026-05-09",
+  "version": "0.1.2"
+}

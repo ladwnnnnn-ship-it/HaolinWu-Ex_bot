@@ -1,0 +1,32 @@
+# Generated/private ex skills are ignored by default.
+exes/*
+!exes/demosense/
+!exes/demosense/**
+!exes/example_xiaoming/
+!exes/example_xiaoming/**
+
+# Raw user exports and local extraction artifacts.
+input/
+knowledge/
+*.db
+*.sqlite
+
+# Downloaded tooling and large binaries.
+vendor/
+
+# Local environment and secrets.
+.env
+venv/
+.venv/
+
+# Temporary/cache files.
+tmp/
+/tmp/
+*.pyc
+__pycache__/
+.pytest_cache/
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
