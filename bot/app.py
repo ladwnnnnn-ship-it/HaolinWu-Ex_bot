@@ -87,6 +87,13 @@ async def lifespan(app: FastAPI):
     app.state.redis = await get_redis_client()
     if settings.public_base_url and settings.telegram_bot_token and settings.telegram_webhook_secret:
         await set_telegram_webhook()
+    else:
+        logger.warning(
+            "Telegram webhook not configured. PUBLIC_BASE_URL=%s TELEGRAM_BOT_TOKEN=%s TELEGRAM_WEBHOOK_SECRET=%s",
+            bool(settings.public_base_url),
+            bool(settings.telegram_bot_token),
+            bool(settings.telegram_webhook_secret),
+        )
     yield
     if getattr(app.state, "redis", None) is not None:
         await app.state.redis.aclose()
@@ -222,6 +229,16 @@ async def health() -> dict[str, Any]:
         "persona": settings.persona_path if not settings.persona_text else "PERSONA_TEXT",
         "redis": bool(getattr(app.state, "redis", None)),
         "model": settings.llm_model,
+        "telegram": {
+            "token": bool(settings.telegram_bot_token),
+            "webhook_secret": bool(settings.telegram_webhook_secret),
+            "public_base_url": bool(settings.public_base_url),
+            "webhook_ready": bool(
+                settings.telegram_bot_token
+                and settings.telegram_webhook_secret
+                and settings.public_base_url
+            ),
+        },
     }
 
 
