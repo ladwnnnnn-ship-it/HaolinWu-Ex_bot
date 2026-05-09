@@ -286,13 +286,16 @@ async def send_telegram_message(chat_id: int | str, text: str) -> None:
 
 
 def split_telegram_text(text: str, limit: int = 3900) -> list[str]:
-    if len(text) <= limit:
-        return [text]
     chunks: list[str] = []
-    start = 0
-    while start < len(text):
-        chunks.append(text[start : start + limit])
-        start += limit
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        lines = [text.strip() or " "]
+
+    for line in lines:
+        start = 0
+        while start < len(line):
+            chunks.append(line[start : start + limit])
+            start += limit
     return chunks
 
 
