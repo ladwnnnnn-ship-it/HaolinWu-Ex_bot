@@ -7,6 +7,8 @@ exes/*
 
 # Raw user exports and local extraction artifacts.
 input/
+!data/
+!data/**
 knowledge/
 *.db
 *.sqlite

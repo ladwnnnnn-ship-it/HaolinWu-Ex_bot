@@ -6,8 +6,10 @@
     "accountUin": "3250805091",
     "peerUin": "2110124650",
     "peerUid": "u_4DzpCSR24d_usVY5hX06EA",
-    "transcript": "C:\\Users\\HUAWEI\\Desktop\\Code\\ex-skill-main\\input\\qce\\demosense_2110124650_all_transcript.txt",
-    "raw": "C:\\Users\\HUAWEI\\Desktop\\Code\\ex-skill-main\\input\\qce\\demosense_2110124650_all_raw.json",
+    "transcript": "data/demosense/demosense_2110124650_all_transcript.txt",
+    "raw_manifest": "data/demosense/manifest.json",
+    "raw_parts": "data/demosense/demosense_2110124650_all_raw.json.part001..part004",
+    "raw_sha256": "d1502a09a284b0edc845bfe1e244ab92e84977104fef27a5d2740ae77b81f213",
     "messageCount": 19870,
     "timeRange": {
       "first": "2023-10-18 18:05:03",
@@ -15,7 +17,7 @@
     }
   },
   "profile": {
-    "relationship": "former-partner style memory object, distilled from QQ chat logs",
+    "relationship": "user-defined ex role, generated strictly from QQ chat logs",
     "city": "[unknown]",
     "occupation": "student-era / school-context contact inferred from records",
     "mbti": "[unknown]",

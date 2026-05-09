@@ -1,0 +1,34 @@
+{
+  "original_name": "demosense_2110124650_all_raw.json",
+  "source_path": "C:\\Users\\HUAWEI\\Desktop\\Code\\ex-skill-main\\input\\qce\\demosense_2110124650_all_raw.json",
+  "size": 199336626,
+  "sha256": "d1502a09a284b0edc845bfe1e244ab92e84977104fef27a5d2740ae77b81f213",
+  "part_size": 52428800,
+  "parts": [
+    {
+      "name": "demosense_2110124650_all_raw.json.part001",
+      "size": 52428800,
+      "sha256": "a140722eb7e92052056c440c6c7d7f7ff35925679ec1f9eed7c533a3d36241b1"
+    },
+    {
+      "name": "demosense_2110124650_all_raw.json.part002",
+      "size": 52428800,
+      "sha256": "04c18088cc24f3baf7adb8527f0d3a394f4b61eaeba658062da153d38da87b72"
+    },
+    {
+      "name": "demosense_2110124650_all_raw.json.part003",
+      "size": 52428800,
+      "sha256": "a01012c23b7690bbb39f52f5d43521e408f867cceeff61d20a3e672303a02c4f"
+    },
+    {
+      "name": "demosense_2110124650_all_raw.json.part004",
+      "size": 42050226,
+      "sha256": "644f887d98543505e11325f5e87bcd0926f7d3614b6b741dec94bf94f73d7d2f"
+    }
+  ],
+  "transcript": {
+    "name": "demosense_2110124650_all_transcript.txt",
+    "size": 1139070,
+    "sha256": "ca9200afaa0d1712bcaf73fe65120863aa13687784dce1d8f2e54c8728a5223c"
+  }
+}
