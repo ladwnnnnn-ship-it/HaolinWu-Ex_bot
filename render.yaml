@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: haolinwu-ex-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn bot.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PERSONA_PATH
+        value: exes/demosense/SKILL.md
+      - key: HISTORY_TURNS
+        value: "12"
+      - key: REQUEST_TIMEOUT
+        value: "60"
