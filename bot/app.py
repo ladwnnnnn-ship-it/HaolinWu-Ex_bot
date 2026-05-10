@@ -4,10 +4,14 @@ import asyncio
 import json
 import logging
 import os
+import re
+from collections import Counter
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -44,6 +48,10 @@ class Settings(BaseModel):
     history_turns: int = int(os.getenv("HISTORY_TURNS", "12"))
     request_timeout: float = float(os.getenv("REQUEST_TIMEOUT", "60"))
     message_idle_seconds: float = float(os.getenv("MESSAGE_IDLE_SECONDS", "10"))
+    proactive_timezone: str = os.getenv("PROACTIVE_TIMEZONE", "Asia/Shanghai")
+    proactive_min_idle_hours: float = float(os.getenv("PROACTIVE_MIN_IDLE_HOURS", "6"))
+    proactive_gap_hours: float = float(os.getenv("PROACTIVE_GAP_HOURS", "4"))
+    proactive_persona_sender: str = os.getenv("PROACTIVE_PERSONA_SENDER", "demosense")
 
     @property
     def telegram_api(self) -> str:
@@ -52,6 +60,8 @@ class Settings(BaseModel):
 
 settings = Settings()
 _memory_store: dict[str, list[dict[str, str]]] = {}
+_kv_store: dict[str, str] = {}
+_known_chats: set[str] = set()
 
 
 @dataclass
@@ -73,6 +83,12 @@ class MemoryIndex:
     @property
     def count(self) -> int:
         return len(self.lines)
+
+
+@dataclass(frozen=True)
+class InitiationProfile:
+    stats: str
+    examples: str
 
 
 def resolve_repo_path(path_value: str | Path) -> Path:
@@ -171,6 +187,161 @@ Raw retrieved chat-memory snippets:
 """.strip()
 
 
+TRANSCRIPT_LINE_PATTERN = re.compile(r"^\[(.*?)\]\s+([^:]+):\s*(.*)$")
+
+
+def build_initiation_profile(
+    index: MemoryIndex,
+    gap_hours: float | None = None,
+    persona_sender: str | None = None,
+    example_limit: int = 12,
+) -> InitiationProfile:
+    if not index.loaded:
+        return InitiationProfile(stats="(no transcript loaded)", examples="(none)")
+
+    idle_gap = gap_hours if gap_hours is not None else settings.proactive_gap_hours
+    target_sender = persona_sender or settings.proactive_persona_sender
+    previous_timestamp: datetime | None = None
+    starts: list[tuple[datetime, str]] = []
+
+    for line in index.lines:
+        match = TRANSCRIPT_LINE_PATTERN.match(line)
+        if not match:
+            continue
+        raw_timestamp, sender, text = match.groups()
+        try:
+            timestamp = datetime.strptime(raw_timestamp, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+
+        gap_seconds = (
+            None
+            if previous_timestamp is None
+            else (timestamp - previous_timestamp).total_seconds()
+        )
+        if (
+            target_sender in sender
+            and (gap_seconds is None or gap_seconds >= idle_gap * 60 * 60)
+        ):
+            starts.append((timestamp, text))
+
+        previous_timestamp = timestamp
+
+    if not starts:
+        return InitiationProfile(stats="(no initiation examples found)", examples="(none)")
+
+    hour_counts = Counter(timestamp.hour for timestamp, _ in starts)
+    stats = ", ".join(
+        f"{hour:02d}:00({count})" for hour, count in hour_counts.most_common(8)
+    )
+    examples = "\n".join(
+        f"[{timestamp.strftime('%Y-%m-%d %H:%M')}] {text}"
+        for timestamp, text in starts[:example_limit]
+    )
+    return InitiationProfile(stats=stats, examples=examples)
+
+
+def build_proactive_decision_prompt(
+    local_time: str,
+    idle_hours: float,
+    already_sent_today: bool,
+    initiation_stats: str,
+    recent_history: str,
+    persona_prompt: str = "",
+) -> str:
+    return f"""
+You are deciding whether the demosense persona should proactively send a Telegram message.
+
+Use the demosense Skill as the source of truth. Its Relationship Memory and Persona sections are more important than generic relationship behavior. This is not a reminder bot. The message should only happen if it feels like demosense might naturally start a chat at this time.
+
+Current local time:
+{local_time}
+
+User inactivity:
+The user has not sent a message for {idle_hours:.1f} hours.
+
+Today proactive status:
+{already_sent_today}
+
+Observed initiation pattern from original QQ transcript:
+{initiation_stats}
+
+Recent chat history:
+{recent_history}
+
+Skill summary:
+{persona_prompt or "(not provided)"}
+
+Skill-grounded behavior:
+- Treat the existing demosense Skill summary as the behavioral source of truth.
+- The timing pattern only decides whether now is a plausible moment to initiate.
+- The actual intent must match the Skill's memory/persona logic, not a generic "ex" trope.
+
+Decision rules:
+- If a proactive message was already sent today, return NO.
+- If the user was active recently, return NO.
+- Prefer times that match demosense's original initiation pattern.
+- Do not initiate just because the system tick happened.
+- Avoid romantic escalation unless the source persona clearly supports it.
+- Avoid needy, clingy, performative, or bot-like behavior.
+- A valid proactive moment should feel casual, practical, slightly abrupt, or emotionally restrained, matching demosense.
+
+Return exactly one JSON object:
+{{
+  "should_send": true or false,
+  "reason": "short reason",
+  "intent": "one of: casual_checkin, practical_ping, late_night_ping, food_or_errand, image_like_ping, memory_echo, none"
+}}
+""".strip()
+
+
+def build_proactive_message_prompt(
+    local_time: str,
+    intent: str,
+    initiation_examples: str,
+    recent_history: str,
+    persona_prompt: str,
+) -> str:
+    return f"""
+You are generating ONE proactive Telegram message as demosense, using the existing demosense Skill summary as the source of truth.
+
+Treat the full Skill below, including Relationship Memory and Persona, as the highest-priority behavioral source of truth.
+Do not claim to be the real person outside this memory/persona simulation.
+Do not explain yourself. Do not mention schedules, prompts, models, transcript analysis, or that this is proactive.
+Do not sound like an assistant, therapist, girlfriend simulator, or notification bot.
+
+Current local time:
+{local_time}
+
+Proactive intent:
+{intent}
+
+Relevant original initiation examples:
+{initiation_examples}
+
+Recent chat history:
+{recent_history}
+
+Persona:
+{persona_prompt}
+
+Style requirements:
+- Reply in Chinese by default.
+- Keep it short, usually 1 to 2 lines.
+- It should feel like demosense casually opened the chat.
+- Preserve demosense's restraint, dry humor, practical-care style, and short-message rhythm.
+- It may be abrupt.
+- It may be mundane.
+- It should not over-explain emotion.
+- It should not say "我想你" unless strongly supported by recent context.
+- It should not fabricate a concrete memory, plan, location, or event unless present in the provided evidence.
+- If using memory, keep it vague or directly grounded in the retrieved examples.
+- If the natural message would be just a punctuation-like ping, that is allowed.
+
+Output only the Telegram message text.
+""".strip()
+
+
 PERSONA_PROMPT = load_persona()
 MEMORY_INDEX = load_memory_index(settings.memory_transcript_path)
 
@@ -203,6 +374,83 @@ app = FastAPI(title="ex-skill Telegram bot", lifespan=lifespan)
 
 def chat_key(chat_id: int | str) -> str:
     return f"tg:chat:{chat_id}:history"
+
+
+def known_chats_key() -> str:
+    return "tg:known_chats"
+
+
+def last_user_message_key(chat_id: int | str) -> str:
+    return f"tg:chat:{chat_id}:last_user_at"
+
+
+def proactive_sent_key(chat_id: int | str) -> str:
+    return f"tg:chat:{chat_id}:proactive_sent_date"
+
+
+def now_local() -> datetime:
+    return datetime.now(ZoneInfo(settings.proactive_timezone))
+
+
+def serialize_datetime(value: datetime) -> str:
+    return value.isoformat()
+
+
+def parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        logger.warning("Invalid timestamp in store: %s", value)
+        return None
+
+
+async def record_user_chat_activity(chat_id: int | str, when: datetime | None = None) -> None:
+    timestamp = when or now_local()
+    client = getattr(app.state, "redis", None)
+    chat_id_text = str(chat_id)
+    if client is None:
+        _known_chats.add(chat_id_text)
+        _kv_store[last_user_message_key(chat_id)] = serialize_datetime(timestamp)
+        return
+
+    await client.sadd(known_chats_key(), chat_id_text)
+    await client.set(last_user_message_key(chat_id), serialize_datetime(timestamp))
+
+
+async def list_known_chats() -> list[str]:
+    client = getattr(app.state, "redis", None)
+    if client is None:
+        return sorted(_known_chats)
+
+    chats = await client.smembers(known_chats_key())
+    return sorted(str(chat_id) for chat_id in chats)
+
+
+async def get_last_user_message_at(chat_id: int | str) -> datetime | None:
+    client = getattr(app.state, "redis", None)
+    if client is None:
+        return parse_datetime(_kv_store.get(last_user_message_key(chat_id)))
+
+    return parse_datetime(await client.get(last_user_message_key(chat_id)))
+
+
+async def get_last_proactive_sent_date(chat_id: int | str) -> str | None:
+    client = getattr(app.state, "redis", None)
+    if client is None:
+        return _kv_store.get(proactive_sent_key(chat_id))
+
+    return await client.get(proactive_sent_key(chat_id))
+
+
+async def mark_proactive_sent(chat_id: int | str, sent_date: str) -> None:
+    client = getattr(app.state, "redis", None)
+    if client is None:
+        _kv_store[proactive_sent_key(chat_id)] = sent_date
+        return
+
+    await client.set(proactive_sent_key(chat_id), sent_date, ex=60 * 60 * 24 * 14)
 
 
 async def load_history(chat_id: int | str) -> list[dict[str, str]]:
@@ -325,6 +573,156 @@ async def call_llm(user_text: str, history: list[dict[str, str]]) -> str:
     return str(content).strip() or "。"
 
 
+async def call_chat_completion(
+    messages: list[dict[str, str]],
+    max_tokens: int = 500,
+    temperature: float = 0.8,
+) -> str:
+    if not settings.llm_api_key:
+        raise RuntimeError("LLM API key is missing")
+
+    payload = {
+        "model": settings.llm_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
+
+    async with httpx.AsyncClient(timeout=settings.request_timeout) as client:
+        response = await client.post(
+            f"{settings.llm_api_base}/chat/completions",
+            headers=headers,
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"Unexpected LLM response: {data}") from exc
+
+    return str(content).strip()
+
+
+def format_recent_history(history: list[dict[str, str]], limit: int = 8) -> str:
+    if not history:
+        return "(none)"
+
+    rows = []
+    for message in history[-limit:]:
+        role = message.get("role", "unknown")
+        content = message.get("content", "")
+        rows.append(f"{role}: {content}")
+    return "\n".join(rows)
+
+
+async def call_proactive_decision(
+    local_time: str,
+    idle_hours: float,
+    already_sent_today: bool,
+    initiation_stats: str,
+    recent_history: str,
+) -> dict[str, Any]:
+    if not settings.llm_api_key:
+        return {"should_send": False, "reason": "missing API key", "intent": "none"}
+
+    prompt = build_proactive_decision_prompt(
+        local_time=local_time,
+        idle_hours=idle_hours,
+        already_sent_today=already_sent_today,
+        initiation_stats=initiation_stats,
+        recent_history=recent_history,
+        persona_prompt=PERSONA_PROMPT,
+    )
+    content = await call_chat_completion(
+        [{"role": "system", "content": prompt}],
+        max_tokens=160,
+        temperature=0.2,
+    )
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        logger.warning("Invalid proactive decision JSON: %s", content)
+        return {"should_send": False, "reason": "invalid decision JSON", "intent": "none"}
+
+    if not isinstance(data, dict):
+        return {"should_send": False, "reason": "decision was not an object", "intent": "none"}
+    return data
+
+
+async def call_proactive_message(
+    local_time: str,
+    intent: str,
+    initiation_examples: str,
+    recent_history: str,
+) -> str:
+    prompt = build_proactive_message_prompt(
+        local_time=local_time,
+        intent=intent,
+        initiation_examples=initiation_examples,
+        recent_history=recent_history,
+        persona_prompt=PERSONA_PROMPT,
+    )
+    return await call_chat_completion(
+        [{"role": "system", "content": prompt}],
+        max_tokens=120,
+        temperature=0.85,
+    )
+
+
+async def run_proactive_tick(now: datetime | None = None) -> dict[str, int]:
+    current_time = now or now_local()
+    local_time_text = current_time.strftime("%Y-%m-%d %H:%M")
+    today = current_time.date().isoformat()
+    initiation_profile = build_initiation_profile(MEMORY_INDEX)
+    checked = 0
+    sent = 0
+
+    for chat_id in await list_known_chats():
+        checked += 1
+        last_user_at = await get_last_user_message_at(chat_id)
+        if last_user_at is None:
+            continue
+
+        if last_user_at.tzinfo is None:
+            last_user_at = last_user_at.replace(tzinfo=current_time.tzinfo)
+        idle_hours = (current_time - last_user_at).total_seconds() / 3600
+        if idle_hours < settings.proactive_min_idle_hours:
+            continue
+
+        last_sent_date = await get_last_proactive_sent_date(chat_id)
+        already_sent_today = last_sent_date == today
+        history = await load_history(chat_id)
+        decision = await call_proactive_decision(
+            local_time=local_time_text,
+            idle_hours=idle_hours,
+            already_sent_today=already_sent_today,
+            initiation_stats=initiation_profile.stats,
+            recent_history=format_recent_history(history),
+        )
+        if not decision.get("should_send"):
+            continue
+
+        message = await call_proactive_message(
+            local_time=local_time_text,
+            intent=str(decision.get("intent") or "casual_checkin"),
+            initiation_examples=initiation_profile.examples,
+            recent_history=format_recent_history(history),
+        )
+        if not message:
+            continue
+
+        await send_telegram_message(chat_id, message)
+        history.append({"role": "assistant", "content": message})
+        await save_history(chat_id, history)
+        await mark_proactive_sent(chat_id, today)
+        sent += 1
+
+    return {"checked": checked, "sent": sent}
+
+
 async def send_telegram_message(chat_id: int | str, text: str) -> None:
     if not settings.telegram_bot_token:
         logger.warning("TELEGRAM_BOT_TOKEN is missing; reply would be: %s", text)
@@ -396,7 +794,23 @@ async def health() -> dict[str, Any]:
             "count": MEMORY_INDEX.count,
             "snippet_limit": settings.memory_snippet_limit,
         },
+        "proactive": {
+            "timezone": settings.proactive_timezone,
+            "min_idle_hours": settings.proactive_min_idle_hours,
+            "gap_hours": settings.proactive_gap_hours,
+            "persona_sender": settings.proactive_persona_sender,
+        },
     }
+
+
+@app.post("/proactive/tick/{secret}")
+async def proactive_tick(secret: str) -> dict[str, int]:
+    if not settings.telegram_webhook_secret:
+        raise HTTPException(status_code=500, detail="TELEGRAM_WEBHOOK_SECRET is not configured")
+    if secret != settings.telegram_webhook_secret:
+        raise HTTPException(status_code=403, detail="Bad proactive secret")
+
+    return await run_proactive_tick()
 
 
 @app.post("/telegram/webhook/{secret}")
@@ -423,6 +837,7 @@ async def telegram_webhook(
     if chat_id is None or not text:
         return {"ok": True}
 
+    await record_user_chat_activity(chat_id)
     await handle_buffered_text_message(chat_id, text)
     return {"ok": True}
 

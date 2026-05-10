@@ -24,6 +24,10 @@ LLM_MODEL=gpt-4o-mini
 REDIS_URL=...
 PERSONA_PATH=exes/demosense/SKILL.md
 MESSAGE_IDLE_SECONDS=10
+PROACTIVE_TIMEZONE=Asia/Shanghai
+PROACTIVE_MIN_IDLE_HOURS=6
+PROACTIVE_GAP_HOURS=4
+PROACTIVE_PERSONA_SENDER=demosense
 ```
 
 If you do not want to commit `exes/demosense`, set `PERSONA_TEXT` to the full `SKILL.md` content in Railway instead.
@@ -37,6 +41,27 @@ If you do not want to commit `exes/demosense`, set `PERSONA_TEXT` to the full `S
 Normal chat messages are buffered per Telegram chat. The bot waits for
 `MESSAGE_IDLE_SECONDS` seconds of silence, then sends the combined message block to
 the LLM so short consecutive messages are answered together.
+
+## Proactive messages
+
+The bot can occasionally start a chat using the original QQ transcript's initiation
+patterns. It extracts moments where `PROACTIVE_PERSONA_SENDER` started a new message
+cluster after `PROACTIVE_GAP_HOURS` hours of silence, then uses those time patterns
+plus the committed/persona-provided `SKILL.md` as the source of truth.
+
+Trigger it with a scheduler request:
+
+```text
+POST https://your-service.up.railway.app/proactive/tick/{TELEGRAM_WEBHOOK_SECRET}
+```
+
+Recommended Railway Cron cadence: every 30-60 minutes. The endpoint is conservative:
+it skips chats that have not talked to the bot before, skips users active within
+`PROACTIVE_MIN_IDLE_HOURS`, and sends at most one proactive message per chat per day.
+
+The generation prompt is Skill-grounded: timing only decides whether the moment is
+plausible; the actual message must follow the demosense Relationship Memory and
+Persona instead of generic reminder-bot or ex-bot behavior.
 
 ## Important deployment note
 
