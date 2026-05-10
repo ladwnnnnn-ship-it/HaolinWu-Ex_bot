@@ -23,6 +23,7 @@ LLM_API_KEY=...
 LLM_MODEL=gpt-4o-mini
 REDIS_URL=...
 PERSONA_PATH=exes/demosense/SKILL.md
+MESSAGE_IDLE_SECONDS=10
 ```
 
 If you do not want to commit `exes/demosense`, set `PERSONA_TEXT` to the full `SKILL.md` content in Railway instead.
@@ -32,6 +33,10 @@ If you do not want to commit `exes/demosense`, set `PERSONA_TEXT` to the full `S
 - `/start`: quick hello.
 - `/reset`: clear this Telegram chat's Redis history.
 - `/whoami`: show persona name.
+
+Normal chat messages are buffered per Telegram chat. The bot waits for
+`MESSAGE_IDLE_SECONDS` seconds of silence, then sends the combined message block to
+the LLM so short consecutive messages are answered together.
 
 ## Important deployment note
 

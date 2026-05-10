@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -42,6 +43,7 @@ class Settings(BaseModel):
     memory_snippet_limit: int = int(os.getenv("MEMORY_SNIPPET_LIMIT", "12"))
     history_turns: int = int(os.getenv("HISTORY_TURNS", "12"))
     request_timeout: float = float(os.getenv("REQUEST_TIMEOUT", "60"))
+    message_idle_seconds: float = float(os.getenv("MESSAGE_IDLE_SECONDS", "10"))
 
     @property
     def telegram_api(self) -> str:
@@ -50,6 +52,16 @@ class Settings(BaseModel):
 
 settings = Settings()
 _memory_store: dict[str, list[dict[str, str]]] = {}
+
+
+@dataclass
+class PendingMessageBuffer:
+    messages: list[str]
+    version: int = 0
+    task: asyncio.Task | None = None
+
+
+_pending_message_buffers: dict[str, PendingMessageBuffer] = {}
 
 
 @dataclass(frozen=True)
@@ -231,6 +243,53 @@ async def reset_history(chat_id: int | str) -> None:
     await client.delete(key)
 
 
+def pending_message_key(chat_id: int | str) -> str:
+    return f"tg:chat:{chat_id}:pending"
+
+
+async def clear_pending_message_buffer(chat_id: int | str) -> None:
+    state = _pending_message_buffers.pop(pending_message_key(chat_id), None)
+    if state and state.task and not state.task.done():
+        state.task.cancel()
+
+
+async def handle_buffered_text_message(
+    chat_id: int | str,
+    text: str,
+    idle_seconds: float | None = None,
+) -> None:
+    if text.startswith("/"):
+        await clear_pending_message_buffer(chat_id)
+        await handle_text_message(chat_id, text)
+        return
+
+    key = pending_message_key(chat_id)
+    state = _pending_message_buffers.get(key)
+    if state is None:
+        state = PendingMessageBuffer(messages=[])
+        _pending_message_buffers[key] = state
+
+    state.messages.append(text)
+    state.version += 1
+    current_version = state.version
+
+    async def flush_if_idle() -> None:
+        await asyncio.sleep(
+            settings.message_idle_seconds if idle_seconds is None else idle_seconds
+        )
+        latest = _pending_message_buffers.get(key)
+        if latest is None or latest.version != current_version:
+            return
+
+        combined_text = "\n".join(latest.messages)
+        _pending_message_buffers.pop(key, None)
+        await handle_text_message(chat_id, combined_text)
+
+    if state.task and not state.task.done():
+        state.task.cancel()
+    state.task = asyncio.create_task(flush_if_idle())
+
+
 async def call_llm(user_text: str, history: list[dict[str, str]]) -> str:
     if not settings.llm_api_key:
         return "呃\n还没配 API key"
@@ -364,7 +423,7 @@ async def telegram_webhook(
     if chat_id is None or not text:
         return {"ok": True}
 
-    await handle_text_message(chat_id, text)
+    await handle_buffered_text_message(chat_id, text)
     return {"ok": True}
 
 
