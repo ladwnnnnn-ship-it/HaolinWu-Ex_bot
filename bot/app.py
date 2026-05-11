@@ -8,7 +8,7 @@ import re
 from collections import Counter
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -67,6 +67,7 @@ class Settings(BaseModel):
     proactive_min_idle_hours: float = float(os.getenv("PROACTIVE_MIN_IDLE_HOURS", "6"))
     proactive_gap_hours: float = float(os.getenv("PROACTIVE_GAP_HOURS", "4"))
     proactive_persona_sender: str = os.getenv("PROACTIVE_PERSONA_SENDER", "demosense")
+    proactive_chat_id: str = os.getenv("PROACTIVE_CHAT_ID", "").strip()
 
     @property
     def telegram_api(self) -> str:
@@ -427,7 +428,15 @@ def proactive_sent_key(chat_id: int | str) -> str:
 
 
 def now_local() -> datetime:
-    return datetime.now(ZoneInfo(settings.proactive_timezone))
+    try:
+        tzinfo = ZoneInfo(settings.proactive_timezone)
+    except Exception:
+        logger.warning(
+            "Timezone %s not available; falling back to UTC+08:00",
+            settings.proactive_timezone,
+        )
+        tzinfo = timezone(timedelta(hours=8))
+    return datetime.now(tzinfo)
 
 
 def serialize_datetime(value: datetime) -> str:
@@ -464,6 +473,16 @@ async def list_known_chats() -> list[str]:
 
     chats = await client.smembers(known_chats_key())
     return sorted(str(chat_id) for chat_id in chats)
+
+
+async def list_proactive_chats() -> list[str]:
+    if not settings.proactive_chat_id:
+        return []
+
+    known_chats = await list_known_chats()
+    if settings.proactive_chat_id not in known_chats:
+        return []
+    return [settings.proactive_chat_id]
 
 
 async def get_last_user_message_at(chat_id: int | str) -> datetime | None:
@@ -865,11 +884,14 @@ async def run_proactive_tick(now: datetime | None = None) -> dict[str, int]:
     current_time = now or now_local()
     local_time_text = current_time.strftime("%Y-%m-%d %H:%M")
     today = current_time.date().isoformat()
-    initiation_profile = build_initiation_profile(MEMORY_INDEX)
     checked = 0
     sent = 0
+    proactive_chats = await list_proactive_chats()
+    if not proactive_chats:
+        return {"checked": checked, "sent": sent}
 
-    for chat_id in await list_known_chats():
+    initiation_profile = build_initiation_profile(MEMORY_INDEX)
+    for chat_id in proactive_chats:
         checked += 1
         last_user_at = await get_last_user_message_at(chat_id)
         if last_user_at is None:
@@ -988,6 +1010,7 @@ async def health() -> dict[str, Any]:
             "min_idle_hours": settings.proactive_min_idle_hours,
             "gap_hours": settings.proactive_gap_hours,
             "persona_sender": settings.proactive_persona_sender,
+            "chat_id_configured": bool(settings.proactive_chat_id),
         },
     }
 

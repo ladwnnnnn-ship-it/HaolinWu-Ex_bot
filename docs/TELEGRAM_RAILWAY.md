@@ -31,6 +31,7 @@ MESSAGE_MAX_IDLE_SECONDS=18
 MESSAGE_COMPLETION_MODEL_ENABLED=false
 MESSAGE_COMPLETION_MODEL_TIMEOUT=1.5
 PROACTIVE_TIMEZONE=Asia/Shanghai
+PROACTIVE_CHAT_ID=your-telegram-chat-id
 PROACTIVE_MIN_IDLE_HOURS=6
 PROACTIVE_GAP_HOURS=4
 PROACTIVE_PERSONA_SENDER=demosense
@@ -76,8 +77,13 @@ POST https://your-service.up.railway.app/proactive/tick/{TELEGRAM_WEBHOOK_SECRET
 ```
 
 Recommended Railway Cron cadence: every 30-60 minutes. The endpoint is conservative:
-it skips chats that have not talked to the bot before, skips users active within
-`PROACTIVE_MIN_IDLE_HOURS`, and sends at most one proactive message per chat per day.
+it only scans the single `PROACTIVE_CHAT_ID`, skips if that chat has not talked to
+the bot before, skips users active within `PROACTIVE_MIN_IDLE_HOURS`, and sends at
+most one proactive message per day.
+
+`PROACTIVE_CHAT_ID` is required for proactive messages. If it is empty, the endpoint
+returns without sending anything. This keeps proactive messaging user-specific even
+if other people have chatted with the bot.
 
 The generation prompt is Skill-grounded: timing only decides whether the moment is
 plausible; the actual message must follow the demosense Relationship Memory and

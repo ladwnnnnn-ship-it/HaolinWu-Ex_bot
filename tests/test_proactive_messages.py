@@ -82,6 +82,7 @@ class ProactiveMessageTests(unittest.IsolatedAsyncioTestCase):
             lines=["[2024-01-01 22:10:00] demosense: 在不在"],
         )
         originals = (
+            bot_app.settings.proactive_chat_id,
             bot_app.list_known_chats,
             bot_app.get_last_user_message_at,
             bot_app.get_last_proactive_sent_date,
@@ -92,6 +93,7 @@ class ProactiveMessageTests(unittest.IsolatedAsyncioTestCase):
             bot_app.MEMORY_INDEX,
         )
         (
+            bot_app.settings.proactive_chat_id,
             bot_app.list_known_chats,
             bot_app.get_last_user_message_at,
             bot_app.get_last_proactive_sent_date,
@@ -101,6 +103,7 @@ class ProactiveMessageTests(unittest.IsolatedAsyncioTestCase):
             bot_app.mark_proactive_sent,
             bot_app.MEMORY_INDEX,
         ) = (
+            "123",
             fake_known_chats,
             fake_last_user_at,
             fake_sent_date,
@@ -114,6 +117,7 @@ class ProactiveMessageTests(unittest.IsolatedAsyncioTestCase):
             result = await bot_app.run_proactive_tick(now=now)
         finally:
             (
+                bot_app.settings.proactive_chat_id,
                 bot_app.list_known_chats,
                 bot_app.get_last_user_message_at,
                 bot_app.get_last_proactive_sent_date,
@@ -127,6 +131,105 @@ class ProactiveMessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"checked": 1, "sent": 1})
         self.assertEqual(sent, [("123", "在不在")])
         self.assertEqual(marked, [("123", "2026-05-11")])
+
+    async def test_proactive_tick_only_uses_configured_chat_id(self):
+        sent = []
+        checked_last_user = []
+        now = datetime(2026, 5, 11, 22, 13, tzinfo=timezone(timedelta(hours=8)))
+
+        async def fake_known_chats():
+            return ["123", "456"]
+
+        async def fake_last_user_at(chat_id):
+            checked_last_user.append(chat_id)
+            return now - timedelta(hours=13)
+
+        async def fake_sent_date(chat_id):
+            return None
+
+        async def fake_decision(*args, **kwargs):
+            return {"should_send": True, "intent": "late_night_ping"}
+
+        async def fake_message(*args, **kwargs):
+            return "在不在"
+
+        async def fake_send(chat_id, text):
+            sent.append((chat_id, text))
+
+        async def fake_mark(chat_id, sent_date):
+            pass
+
+        test_index = bot_app.MemoryIndex(
+            path="memory.txt",
+            loaded=True,
+            lines=["[2024-01-01 22:10:00] demosense: 在不在"],
+        )
+        originals = (
+            bot_app.settings.proactive_chat_id,
+            bot_app.list_known_chats,
+            bot_app.get_last_user_message_at,
+            bot_app.get_last_proactive_sent_date,
+            bot_app.call_proactive_decision,
+            bot_app.call_proactive_message,
+            bot_app.send_telegram_message,
+            bot_app.mark_proactive_sent,
+            bot_app.MEMORY_INDEX,
+        )
+        (
+            bot_app.settings.proactive_chat_id,
+            bot_app.list_known_chats,
+            bot_app.get_last_user_message_at,
+            bot_app.get_last_proactive_sent_date,
+            bot_app.call_proactive_decision,
+            bot_app.call_proactive_message,
+            bot_app.send_telegram_message,
+            bot_app.mark_proactive_sent,
+            bot_app.MEMORY_INDEX,
+        ) = (
+            "456",
+            fake_known_chats,
+            fake_last_user_at,
+            fake_sent_date,
+            fake_decision,
+            fake_message,
+            fake_send,
+            fake_mark,
+            test_index,
+        )
+        try:
+            result = await bot_app.run_proactive_tick(now=now)
+        finally:
+            (
+                bot_app.settings.proactive_chat_id,
+                bot_app.list_known_chats,
+                bot_app.get_last_user_message_at,
+                bot_app.get_last_proactive_sent_date,
+                bot_app.call_proactive_decision,
+                bot_app.call_proactive_message,
+                bot_app.send_telegram_message,
+                bot_app.mark_proactive_sent,
+                bot_app.MEMORY_INDEX,
+            ) = originals
+
+        self.assertEqual(result, {"checked": 1, "sent": 1})
+        self.assertEqual(checked_last_user, ["456"])
+        self.assertEqual(sent, [("456", "在不在")])
+
+    async def test_proactive_tick_skips_when_no_dedicated_chat_id_is_configured(self):
+        async def fake_known_chats():
+            return ["123"]
+
+        originals = (bot_app.settings.proactive_chat_id, bot_app.list_known_chats)
+        bot_app.settings.proactive_chat_id = ""
+        bot_app.list_known_chats = fake_known_chats
+        try:
+            result = await bot_app.run_proactive_tick(
+                now=datetime(2026, 5, 11, 22, 13, tzinfo=timezone(timedelta(hours=8)))
+            )
+        finally:
+            bot_app.settings.proactive_chat_id, bot_app.list_known_chats = originals
+
+        self.assertEqual(result, {"checked": 0, "sent": 0})
 
 
 if __name__ == "__main__":
