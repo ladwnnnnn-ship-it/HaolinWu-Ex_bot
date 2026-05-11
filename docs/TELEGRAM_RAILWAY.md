@@ -44,6 +44,7 @@ If you do not want to commit `exes/demosense`, set `PERSONA_TEXT` to the full `S
 - `/start`: quick hello.
 - `/reset`: clear this Telegram chat's Redis history.
 - `/whoami`: show persona name.
+- `/chatid`: show the numeric Telegram chat id to put in `PROACTIVE_CHAT_ID`.
 
 Normal chat messages are buffered per Telegram chat. The bot first estimates a wait
 time from fast local rules. Optional LLM-based completion checks can be enabled

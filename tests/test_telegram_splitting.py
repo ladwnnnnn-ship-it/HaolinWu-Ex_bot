@@ -20,5 +20,22 @@ class TelegramSplittingTests(unittest.TestCase):
         self.assertEqual(chunks, ["abc", "def"])
 
 
+class TelegramCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chatid_command_returns_current_chat_id(self):
+        sent = []
+
+        async def fake_send(chat_id, text):
+            sent.append((chat_id, text))
+
+        original = bot_app.send_telegram_message
+        bot_app.send_telegram_message = fake_send
+        try:
+            await bot_app.handle_text_message(123456, "/chatid")
+        finally:
+            bot_app.send_telegram_message = original
+
+        self.assertEqual(sent, [(123456, "chat_id: 123456")])
+
+
 if __name__ == "__main__":
     unittest.main()

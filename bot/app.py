@@ -1065,6 +1065,9 @@ async def handle_text_message(chat_id: int | str, text: str) -> None:
     if text.startswith("/whoami"):
         await send_telegram_message(chat_id, "demosense\n/捂脸")
         return
+    if text.startswith("/chatid"):
+        await send_telegram_message(chat_id, f"chat_id: {chat_id}")
+        return
 
     history = await load_history(chat_id)
     try:
