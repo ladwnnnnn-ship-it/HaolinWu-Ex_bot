@@ -28,6 +28,7 @@ MESSAGE_UNFINISHED_BONUS_SECONDS=12
 MESSAGE_QUESTION_DISCOUNT_SECONDS=1.5
 MESSAGE_MIN_IDLE_SECONDS=1
 MESSAGE_MAX_IDLE_SECONDS=18
+MESSAGE_COMPLETION_MODEL_ENABLED=false
 MESSAGE_COMPLETION_MODEL_TIMEOUT=1.5
 PROACTIVE_TIMEZONE=Asia/Shanghai
 PROACTIVE_MIN_IDLE_HOURS=6
@@ -44,10 +45,9 @@ If you do not want to commit `exes/demosense`, set `PERSONA_TEXT` to the full `S
 - `/whoami`: show persona name.
 
 Normal chat messages are buffered per Telegram chat. The bot first estimates a wait
-time from fast local rules, then optionally asks the LLM whether the user has
-finished the thought. The LLM decision is capped by
-`MESSAGE_COMPLETION_MODEL_TIMEOUT`, so a slow completion check falls back to the
-rule-based wait instead of delaying the chat.
+time from fast local rules. Optional LLM-based completion checks can be enabled
+with `MESSAGE_COMPLETION_MODEL_ENABLED=true`, but the default is `false` to avoid
+extra model calls and provider-side failed/cancelled request logs.
 
 Useful tuning variables:
 
@@ -57,6 +57,8 @@ Useful tuning variables:
   it ends mid-thought, such as "就是", "但是", "因为", or a comma.
 - `MESSAGE_QUESTION_DISCOUNT_SECONDS`: shorter wait for clear questions.
 - `MESSAGE_MIN_IDLE_SECONDS` / `MESSAGE_MAX_IDLE_SECONDS`: lower and upper bounds.
+- `MESSAGE_COMPLETION_MODEL_ENABLED`: set to `true` only if you want an extra LLM
+  call to judge whether the user has finished the thought.
 - `MESSAGE_COMPLETION_MODEL_TIMEOUT`: maximum seconds to wait for the LLM
   completion decision.
 

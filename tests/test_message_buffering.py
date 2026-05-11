@@ -121,10 +121,12 @@ class MessageBufferingTests(unittest.IsolatedAsyncioTestCase):
             bot_app.handle_text_message,
             bot_app.call_message_completion_decision,
             bot_app.settings.message_min_idle_seconds,
+            bot_app.settings.message_completion_model_enabled,
         )
         bot_app.handle_text_message = fake_handle
         bot_app.call_message_completion_decision = fake_completion_decision
         bot_app.settings.message_min_idle_seconds = 0
+        bot_app.settings.message_completion_model_enabled = True
         try:
             await bot_app.handle_buffered_text_message(
                 123,
@@ -138,6 +140,7 @@ class MessageBufferingTests(unittest.IsolatedAsyncioTestCase):
                 bot_app.handle_text_message,
                 bot_app.call_message_completion_decision,
                 bot_app.settings.message_min_idle_seconds,
+                bot_app.settings.message_completion_model_enabled,
             ) = originals
 
         self.assertEqual(handled, [(123, "你觉得呢？")])
@@ -157,9 +160,11 @@ class MessageBufferingTests(unittest.IsolatedAsyncioTestCase):
         originals = (
             bot_app.handle_text_message,
             bot_app.call_message_completion_decision,
+            bot_app.settings.message_completion_model_enabled,
         )
         bot_app.handle_text_message = fake_handle
         bot_app.call_message_completion_decision = slow_completion_decision
+        bot_app.settings.message_completion_model_enabled = True
         try:
             await bot_app.handle_buffered_text_message(
                 123,
@@ -172,8 +177,48 @@ class MessageBufferingTests(unittest.IsolatedAsyncioTestCase):
             (
                 bot_app.handle_text_message,
                 bot_app.call_message_completion_decision,
+                bot_app.settings.message_completion_model_enabled,
             ) = originals
 
+        self.assertEqual(handled, [(123, "普通一句")])
+
+    async def test_completion_model_is_disabled_by_default(self):
+        handled = []
+        handled_event = asyncio.Event()
+        calls = []
+
+        async def fake_handle(chat_id, text):
+            handled.append((chat_id, text))
+            handled_event.set()
+
+        async def fake_completion_decision(messages):
+            calls.append(messages)
+            return {"complete": True, "wait_seconds": 0}
+
+        originals = (
+            bot_app.handle_text_message,
+            bot_app.call_message_completion_decision,
+            bot_app.settings.message_completion_model_enabled,
+        )
+        bot_app.handle_text_message = fake_handle
+        bot_app.call_message_completion_decision = fake_completion_decision
+        bot_app.settings.message_completion_model_enabled = False
+        try:
+            await bot_app.handle_buffered_text_message(
+                123,
+                "普通一句",
+                idle_seconds=0.01,
+                completion_timeout=0.03,
+            )
+            await asyncio.wait_for(handled_event.wait(), timeout=0.2)
+        finally:
+            (
+                bot_app.handle_text_message,
+                bot_app.call_message_completion_decision,
+                bot_app.settings.message_completion_model_enabled,
+            ) = originals
+
+        self.assertEqual(calls, [])
         self.assertEqual(handled, [(123, "普通一句")])
 
 

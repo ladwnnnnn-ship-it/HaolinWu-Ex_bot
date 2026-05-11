@@ -59,6 +59,10 @@ class Settings(BaseModel):
     message_completion_model_timeout: float = float(
         os.getenv("MESSAGE_COMPLETION_MODEL_TIMEOUT", "1.5")
     )
+    message_completion_model_enabled: bool = (
+        os.getenv("MESSAGE_COMPLETION_MODEL_ENABLED", "false").lower()
+        in {"1", "true", "yes", "on"}
+    )
     proactive_timezone: str = os.getenv("PROACTIVE_TIMEZONE", "Asia/Shanghai")
     proactive_min_idle_hours: float = float(os.getenv("PROACTIVE_MIN_IDLE_HOURS", "6"))
     proactive_gap_hours: float = float(os.getenv("PROACTIVE_GAP_HOURS", "4"))
@@ -636,11 +640,17 @@ async def choose_message_idle_seconds(
     rule_seconds: float,
     completion_timeout: float | None = None,
 ) -> float:
+    if not settings.message_completion_model_enabled:
+        return rule_seconds
+
     timeout = (
         settings.message_completion_model_timeout
         if completion_timeout is None
         else completion_timeout
     )
+    if timeout <= 0:
+        return rule_seconds
+
     try:
         decision = await asyncio.wait_for(
             call_message_completion_decision(messages),
