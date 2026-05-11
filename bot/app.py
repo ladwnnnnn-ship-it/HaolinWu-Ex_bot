@@ -48,6 +48,17 @@ class Settings(BaseModel):
     history_turns: int = int(os.getenv("HISTORY_TURNS", "12"))
     request_timeout: float = float(os.getenv("REQUEST_TIMEOUT", "60"))
     message_idle_seconds: float = float(os.getenv("MESSAGE_IDLE_SECONDS", "10"))
+    message_unfinished_bonus_seconds: float = float(
+        os.getenv("MESSAGE_UNFINISHED_BONUS_SECONDS", "10")
+    )
+    message_question_discount_seconds: float = float(
+        os.getenv("MESSAGE_QUESTION_DISCOUNT_SECONDS", "3")
+    )
+    message_max_idle_seconds: float = float(os.getenv("MESSAGE_MAX_IDLE_SECONDS", "25"))
+    message_min_idle_seconds: float = float(os.getenv("MESSAGE_MIN_IDLE_SECONDS", "3"))
+    message_completion_model_timeout: float = float(
+        os.getenv("MESSAGE_COMPLETION_MODEL_TIMEOUT", "2")
+    )
     proactive_timezone: str = os.getenv("PROACTIVE_TIMEZONE", "Asia/Shanghai")
     proactive_min_idle_hours: float = float(os.getenv("PROACTIVE_MIN_IDLE_HOURS", "6"))
     proactive_gap_hours: float = float(os.getenv("PROACTIVE_GAP_HOURS", "4"))
@@ -72,6 +83,29 @@ class PendingMessageBuffer:
 
 
 _pending_message_buffers: dict[str, PendingMessageBuffer] = {}
+
+UNFINISHED_MESSAGE_SUFFIXES = (
+    "然后",
+    "但是",
+    "可是",
+    "就是",
+    "因为",
+    "所以",
+    "而且",
+    "还有",
+    "比如",
+    "其实",
+    "怎么说呢",
+    "我想说",
+    "我觉得",
+    "，",
+    ",",
+    "、",
+    "……",
+    "...",
+)
+FINISHED_MESSAGE_MARKERS = ("说完了", "就这些", "你说吧", "没了", "大概就是这样")
+QUESTION_SUFFIXES = ("?", "？", "吗", "呢", "怎么办", "咋办")
 
 
 @dataclass(frozen=True)
@@ -495,6 +529,141 @@ def pending_message_key(chat_id: int | str) -> str:
     return f"tg:chat:{chat_id}:pending"
 
 
+def clamp_seconds(value: float, min_seconds: float, max_seconds: float) -> float:
+    return min(max(value, min_seconds), max_seconds)
+
+
+def looks_unfinished_message(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    return any(stripped.endswith(suffix) for suffix in UNFINISHED_MESSAGE_SUFFIXES)
+
+
+def looks_finished_message(text: str) -> bool:
+    stripped = text.strip()
+    return any(marker in stripped for marker in FINISHED_MESSAGE_MARKERS)
+
+
+def looks_clear_question(text: str) -> bool:
+    stripped = text.strip()
+    return any(stripped.endswith(suffix) for suffix in QUESTION_SUFFIXES)
+
+
+def estimate_message_idle_seconds(
+    messages: list[str],
+    base_seconds: float | None = None,
+    unfinished_bonus_seconds: float | None = None,
+    question_discount_seconds: float | None = None,
+    min_seconds: float | None = None,
+    max_seconds: float | None = None,
+) -> float:
+    if not messages:
+        return settings.message_idle_seconds
+
+    base = settings.message_idle_seconds if base_seconds is None else base_seconds
+    unfinished_bonus = (
+        settings.message_unfinished_bonus_seconds
+        if unfinished_bonus_seconds is None
+        else unfinished_bonus_seconds
+    )
+    question_discount = (
+        settings.message_question_discount_seconds
+        if question_discount_seconds is None
+        else question_discount_seconds
+    )
+    minimum = settings.message_min_idle_seconds if min_seconds is None else min_seconds
+    maximum = settings.message_max_idle_seconds if max_seconds is None else max_seconds
+    last_message = messages[-1]
+
+    if looks_finished_message(last_message):
+        return minimum
+
+    wait_seconds = base
+    if looks_unfinished_message(last_message):
+        wait_seconds += unfinished_bonus
+    if looks_clear_question(last_message):
+        wait_seconds -= question_discount
+    if len(messages) >= 3 and all(len(message.strip()) <= 12 for message in messages[-3:]):
+        wait_seconds += min(4, unfinished_bonus / 2)
+
+    return clamp_seconds(wait_seconds, minimum, maximum)
+
+
+def build_message_completion_prompt(messages: list[str]) -> str:
+    pending_messages = "\n".join(f"- {message}" for message in messages)
+    return f"""
+You judge whether the user has finished sending a multi-message thought.
+
+Messages:
+{pending_messages}
+
+Return JSON only:
+{{
+  "complete": true or false,
+  "wait_seconds": integer from 3 to 25
+}}
+
+Rules:
+- complete=false if the last message looks unfinished, transitional, or mid-sentence.
+- complete=true if the user asks a clear question or signals they are done.
+- Prefer shorter waits for clear questions.
+- Prefer longer waits for emotional disclosure or fragmented thoughts.
+""".strip()
+
+
+async def call_message_completion_decision(messages: list[str]) -> dict[str, Any] | None:
+    if not settings.llm_api_key:
+        return None
+
+    content = await call_chat_completion(
+        [{"role": "system", "content": build_message_completion_prompt(messages)}],
+        max_tokens=80,
+        temperature=0,
+    )
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        logger.warning("Invalid message completion JSON: %s", content)
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+async def choose_message_idle_seconds(
+    messages: list[str],
+    rule_seconds: float,
+    completion_timeout: float | None = None,
+) -> float:
+    timeout = (
+        settings.message_completion_model_timeout
+        if completion_timeout is None
+        else completion_timeout
+    )
+    try:
+        decision = await asyncio.wait_for(
+            call_message_completion_decision(messages),
+            timeout=timeout,
+        )
+    except (asyncio.TimeoutError, RuntimeError, httpx.HTTPError):
+        return rule_seconds
+
+    if not decision:
+        return rule_seconds
+
+    try:
+        wait_seconds = float(decision.get("wait_seconds", rule_seconds))
+    except (TypeError, ValueError):
+        return rule_seconds
+
+    return clamp_seconds(
+        wait_seconds,
+        settings.message_min_idle_seconds,
+        settings.message_max_idle_seconds,
+    )
+
+
 async def clear_pending_message_buffer(chat_id: int | str) -> None:
     state = _pending_message_buffers.pop(pending_message_key(chat_id), None)
     if state and state.task and not state.task.done():
@@ -505,6 +674,7 @@ async def handle_buffered_text_message(
     chat_id: int | str,
     text: str,
     idle_seconds: float | None = None,
+    completion_timeout: float | None = None,
 ) -> None:
     if text.startswith("/"):
         await clear_pending_message_buffer(chat_id)
@@ -522,9 +692,17 @@ async def handle_buffered_text_message(
     current_version = state.version
 
     async def flush_if_idle() -> None:
-        await asyncio.sleep(
-            settings.message_idle_seconds if idle_seconds is None else idle_seconds
+        rule_seconds = (
+            estimate_message_idle_seconds(latest_messages)
+            if idle_seconds is None
+            else idle_seconds
         )
+        wait_seconds = await choose_message_idle_seconds(
+            latest_messages,
+            rule_seconds,
+            completion_timeout=completion_timeout,
+        )
+        await asyncio.sleep(wait_seconds)
         latest = _pending_message_buffers.get(key)
         if latest is None or latest.version != current_version:
             return
@@ -535,6 +713,7 @@ async def handle_buffered_text_message(
 
     if state.task and not state.task.done():
         state.task.cancel()
+    latest_messages = list(state.messages)
     state.task = asyncio.create_task(flush_if_idle())
 
 

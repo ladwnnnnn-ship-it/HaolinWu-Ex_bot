@@ -24,6 +24,11 @@ LLM_MODEL=gpt-4o-mini
 REDIS_URL=...
 PERSONA_PATH=exes/demosense/SKILL.md
 MESSAGE_IDLE_SECONDS=10
+MESSAGE_UNFINISHED_BONUS_SECONDS=10
+MESSAGE_QUESTION_DISCOUNT_SECONDS=3
+MESSAGE_MIN_IDLE_SECONDS=3
+MESSAGE_MAX_IDLE_SECONDS=25
+MESSAGE_COMPLETION_MODEL_TIMEOUT=2
 PROACTIVE_TIMEZONE=Asia/Shanghai
 PROACTIVE_MIN_IDLE_HOURS=6
 PROACTIVE_GAP_HOURS=4
@@ -38,9 +43,21 @@ If you do not want to commit `exes/demosense`, set `PERSONA_TEXT` to the full `S
 - `/reset`: clear this Telegram chat's Redis history.
 - `/whoami`: show persona name.
 
-Normal chat messages are buffered per Telegram chat. The bot waits for
-`MESSAGE_IDLE_SECONDS` seconds of silence, then sends the combined message block to
-the LLM so short consecutive messages are answered together.
+Normal chat messages are buffered per Telegram chat. The bot first estimates a wait
+time from fast local rules, then optionally asks the LLM whether the user has
+finished the thought. The LLM decision is capped by
+`MESSAGE_COMPLETION_MODEL_TIMEOUT`, so a slow completion check falls back to the
+rule-based wait instead of delaying the chat.
+
+Useful tuning variables:
+
+- `MESSAGE_IDLE_SECONDS`: base wait for an ordinary complete-looking message.
+- `MESSAGE_UNFINISHED_BONUS_SECONDS`: extra wait when the last message looks like
+  it ends mid-thought, such as "就是", "但是", "因为", or a comma.
+- `MESSAGE_QUESTION_DISCOUNT_SECONDS`: shorter wait for clear questions.
+- `MESSAGE_MIN_IDLE_SECONDS` / `MESSAGE_MAX_IDLE_SECONDS`: lower and upper bounds.
+- `MESSAGE_COMPLETION_MODEL_TIMEOUT`: maximum seconds to wait for the LLM
+  completion decision.
 
 ## Proactive messages
 

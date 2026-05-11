@@ -75,6 +75,97 @@ class MessageBufferingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(handled, [(123, "/reset")])
 
+    def test_rule_waits_longer_for_unfinished_messages(self):
+        wait_seconds = bot_app.estimate_message_idle_seconds(
+            ["我今天其实想说", "就是"],
+            base_seconds=8,
+            unfinished_bonus_seconds=10,
+            max_seconds=25,
+        )
+
+        self.assertEqual(wait_seconds, 18)
+
+    def test_rule_waits_less_for_clear_questions(self):
+        wait_seconds = bot_app.estimate_message_idle_seconds(
+            ["你还记得那天吗？"],
+            base_seconds=8,
+            question_discount_seconds=3,
+            min_seconds=3,
+        )
+
+        self.assertEqual(wait_seconds, 5)
+
+    async def test_model_completion_decision_can_shorten_buffer_wait(self):
+        handled = []
+        handled_event = asyncio.Event()
+
+        async def fake_handle(chat_id, text):
+            handled.append((chat_id, text))
+            handled_event.set()
+
+        async def fake_completion_decision(messages):
+            await asyncio.sleep(0.005)
+            return {"complete": True, "wait_seconds": 0.01}
+
+        originals = (
+            bot_app.handle_text_message,
+            bot_app.call_message_completion_decision,
+            bot_app.settings.message_min_idle_seconds,
+        )
+        bot_app.handle_text_message = fake_handle
+        bot_app.call_message_completion_decision = fake_completion_decision
+        bot_app.settings.message_min_idle_seconds = 0
+        try:
+            await bot_app.handle_buffered_text_message(
+                123,
+                "你觉得呢？",
+                idle_seconds=0.05,
+                completion_timeout=0.03,
+            )
+            await asyncio.wait_for(handled_event.wait(), timeout=0.2)
+        finally:
+            (
+                bot_app.handle_text_message,
+                bot_app.call_message_completion_decision,
+                bot_app.settings.message_min_idle_seconds,
+            ) = originals
+
+        self.assertEqual(handled, [(123, "你觉得呢？")])
+
+    async def test_slow_model_completion_decision_falls_back_to_rule_wait(self):
+        handled = []
+        handled_event = asyncio.Event()
+
+        async def fake_handle(chat_id, text):
+            handled.append((chat_id, text))
+            handled_event.set()
+
+        async def slow_completion_decision(messages):
+            await asyncio.sleep(0.1)
+            return {"complete": False, "wait_seconds": 0.1}
+
+        originals = (
+            bot_app.handle_text_message,
+            bot_app.call_message_completion_decision,
+        )
+        bot_app.handle_text_message = fake_handle
+        bot_app.call_message_completion_decision = slow_completion_decision
+        try:
+            await bot_app.handle_buffered_text_message(
+                123,
+                "普通一句",
+                idle_seconds=0.02,
+                completion_timeout=0.005,
+            )
+            await asyncio.wait_for(handled_event.wait(), timeout=0.2)
+        finally:
+            (
+                bot_app.handle_text_message,
+                bot_app.call_message_completion_decision,
+            ) = originals
+
+        self.assertEqual(handled, [(123, "普通一句")])
+
 
 if __name__ == "__main__":
     unittest.main()
