@@ -23,12 +23,12 @@ LLM_API_KEY=...
 LLM_MODEL=gpt-4o-mini
 REDIS_URL=...
 PERSONA_PATH=exes/demosense/SKILL.md
-MESSAGE_IDLE_SECONDS=10
-MESSAGE_UNFINISHED_BONUS_SECONDS=10
-MESSAGE_QUESTION_DISCOUNT_SECONDS=3
-MESSAGE_MIN_IDLE_SECONDS=3
-MESSAGE_MAX_IDLE_SECONDS=25
-MESSAGE_COMPLETION_MODEL_TIMEOUT=2
+MESSAGE_IDLE_SECONDS=3
+MESSAGE_UNFINISHED_BONUS_SECONDS=12
+MESSAGE_QUESTION_DISCOUNT_SECONDS=1.5
+MESSAGE_MIN_IDLE_SECONDS=1
+MESSAGE_MAX_IDLE_SECONDS=18
+MESSAGE_COMPLETION_MODEL_TIMEOUT=1.5
 PROACTIVE_TIMEZONE=Asia/Shanghai
 PROACTIVE_MIN_IDLE_HOURS=6
 PROACTIVE_GAP_HOURS=4
@@ -51,7 +51,8 @@ rule-based wait instead of delaying the chat.
 
 Useful tuning variables:
 
-- `MESSAGE_IDLE_SECONDS`: base wait for an ordinary complete-looking message.
+- `MESSAGE_IDLE_SECONDS`: base wait for an ordinary complete-looking message. Keep
+  this low for a near-instant reply feel.
 - `MESSAGE_UNFINISHED_BONUS_SECONDS`: extra wait when the last message looks like
   it ends mid-thought, such as "就是", "但是", "因为", or a comma.
 - `MESSAGE_QUESTION_DISCOUNT_SECONDS`: shorter wait for clear questions.

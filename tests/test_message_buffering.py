@@ -95,6 +95,16 @@ class MessageBufferingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(wait_seconds, 5)
 
+    def test_default_rule_feels_fast_for_complete_messages(self):
+        wait_seconds = bot_app.estimate_message_idle_seconds(["我到家了"])
+
+        self.assertEqual(wait_seconds, 3)
+
+    def test_default_rule_still_waits_for_unfinished_messages(self):
+        wait_seconds = bot_app.estimate_message_idle_seconds(["我想说"])
+
+        self.assertEqual(wait_seconds, 15)
+
     async def test_model_completion_decision_can_shorten_buffer_wait(self):
         handled = []
         handled_event = asyncio.Event()

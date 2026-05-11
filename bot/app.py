@@ -47,17 +47,17 @@ class Settings(BaseModel):
     memory_snippet_limit: int = int(os.getenv("MEMORY_SNIPPET_LIMIT", "12"))
     history_turns: int = int(os.getenv("HISTORY_TURNS", "12"))
     request_timeout: float = float(os.getenv("REQUEST_TIMEOUT", "60"))
-    message_idle_seconds: float = float(os.getenv("MESSAGE_IDLE_SECONDS", "10"))
+    message_idle_seconds: float = float(os.getenv("MESSAGE_IDLE_SECONDS", "3"))
     message_unfinished_bonus_seconds: float = float(
-        os.getenv("MESSAGE_UNFINISHED_BONUS_SECONDS", "10")
+        os.getenv("MESSAGE_UNFINISHED_BONUS_SECONDS", "12")
     )
     message_question_discount_seconds: float = float(
-        os.getenv("MESSAGE_QUESTION_DISCOUNT_SECONDS", "3")
+        os.getenv("MESSAGE_QUESTION_DISCOUNT_SECONDS", "1.5")
     )
-    message_max_idle_seconds: float = float(os.getenv("MESSAGE_MAX_IDLE_SECONDS", "25"))
-    message_min_idle_seconds: float = float(os.getenv("MESSAGE_MIN_IDLE_SECONDS", "3"))
+    message_max_idle_seconds: float = float(os.getenv("MESSAGE_MAX_IDLE_SECONDS", "18"))
+    message_min_idle_seconds: float = float(os.getenv("MESSAGE_MIN_IDLE_SECONDS", "1"))
     message_completion_model_timeout: float = float(
-        os.getenv("MESSAGE_COMPLETION_MODEL_TIMEOUT", "2")
+        os.getenv("MESSAGE_COMPLETION_MODEL_TIMEOUT", "1.5")
     )
     proactive_timezone: str = os.getenv("PROACTIVE_TIMEZONE", "Asia/Shanghai")
     proactive_min_idle_hours: float = float(os.getenv("PROACTIVE_MIN_IDLE_HOURS", "6"))
