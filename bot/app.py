@@ -17,7 +17,15 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
-from bot.vision import TelegramPhoto, select_telegram_photo
+from bot.vision import (
+    ImageObservation,
+    TelegramPhoto,
+    call_vision_api,
+    download_telegram_photo,
+    select_telegram_photo,
+    unavailable_observation,
+)
+from bot.vision_prompts import PERSONA_IMAGE_RULES
 
 try:
     import redis.asyncio as redis
@@ -37,6 +45,19 @@ class Settings(BaseModel):
     llm_api_key: str = os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", ""))
     llm_api_base: str = os.getenv("LLM_API_BASE", "https://api.openai.com/v1").rstrip("/")
     llm_model: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    vision_api_key: str = os.getenv(
+        "VISION_API_KEY",
+        os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", "")),
+    )
+    vision_api_base: str = os.getenv(
+        "VISION_API_BASE",
+        os.getenv("LLM_API_BASE", "https://api.deepseek.com/v1"),
+    ).rstrip("/")
+    vision_model: str = os.getenv("VISION_MODEL", "deepseek-flash")
+    vision_timeout: float = float(os.getenv("VISION_TIMEOUT", "45"))
+    vision_max_image_bytes: int = int(
+        os.getenv("VISION_MAX_IMAGE_BYTES", str(8 * 1024 * 1024))
+    )
     persona_path: str = os.getenv(
         "PERSONA_PATH",
         "exes/demosense/SKILL.md",
@@ -207,9 +228,19 @@ def retrieve_memory_snippets(
     return [line for _, _, line in scored[:max_results]]
 
 
-def build_system_prompt(persona_prompt: str, memory_snippets: list[str] | None = None) -> str:
+def build_system_prompt(
+    persona_prompt: str,
+    memory_snippets: list[str] | None = None,
+    image_observation: ImageObservation | None = None,
+) -> str:
     snippets = memory_snippets or []
     memory_block = "\n".join(snippets) if snippets else "(none retrieved for this message)"
+    image_block = "(no image in this turn)"
+    if image_observation is not None:
+        image_block = (
+            f"{PERSONA_IMAGE_RULES}\n"
+            f"{image_observation.to_prompt_text()}"
+        )
     return f"""
 You are running a Telegram bot persona.
 
@@ -226,6 +257,9 @@ Persona:
 
 Raw retrieved chat-memory snippets:
 {memory_block}
+
+Grounded image observation:
+{image_block}
 """.strip()
 
 
@@ -776,15 +810,69 @@ async def handle_image_message(
     text: str,
     photos: list[TelegramPhoto],
 ) -> None:
-    await handle_text_message(chat_id, text or "[发送了一张图片]")
+    try:
+        observation = await analyze_telegram_photo(photos[0])
+    except Exception as exc:
+        logger.warning("Vision processing failed: %s", type(exc).__name__)
+        observation = unavailable_observation("暂时无法读取这张图片")
+
+    history = await load_history(chat_id)
+    user_text = text or "用户发送了一张图片"
+    try:
+        reply = await call_llm(user_text, history, observation)
+    except Exception:
+        logger.exception("Failed to generate image reply")
+        reply = "呃\n卡住了"
+
+    stored_user_text = text or "[发送了一张图片]"
+    stored_user_text += f"\n[图片观察摘要] {observation.summary}"
+    history.append({"role": "user", "content": stored_user_text})
+    history.append({"role": "assistant", "content": reply})
+    await save_history(chat_id, history)
+    await send_telegram_message(chat_id, reply)
 
 
-async def call_llm(user_text: str, history: list[dict[str, str]]) -> str:
+async def analyze_telegram_photo(photo: TelegramPhoto) -> ImageObservation:
+    if not (
+        settings.vision_api_base
+        and settings.vision_api_key
+        and settings.vision_model
+    ):
+        raise RuntimeError("Vision API is not configured")
+
+    async with httpx.AsyncClient(timeout=settings.vision_timeout) as client:
+        image_bytes, mime_type = await download_telegram_photo(
+            photo,
+            telegram_api=settings.telegram_api,
+            bot_token=settings.telegram_bot_token,
+            client=client,
+            max_bytes=settings.vision_max_image_bytes,
+        )
+        return await call_vision_api(
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            caption=photo.caption,
+            api_base=settings.vision_api_base,
+            api_key=settings.vision_api_key,
+            model=settings.vision_model,
+            client=client,
+        )
+
+
+async def call_llm(
+    user_text: str,
+    history: list[dict[str, str]],
+    image_observation: ImageObservation | None = None,
+) -> str:
     if not settings.llm_api_key:
         return "呃\n还没配 API key"
 
     memory_snippets = retrieve_memory_snippets(user_text, MEMORY_INDEX)
-    system_prompt = build_system_prompt(PERSONA_PROMPT, memory_snippets)
+    system_prompt = build_system_prompt(
+        PERSONA_PROMPT,
+        memory_snippets,
+        image_observation=image_observation,
+    )
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
     messages.append({"role": "user", "content": user_text})

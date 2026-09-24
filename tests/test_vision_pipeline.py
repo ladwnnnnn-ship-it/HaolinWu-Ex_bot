@@ -1,7 +1,13 @@
+import os
 import unittest
+from unittest.mock import patch
 
+os.environ.setdefault("PERSONA_TEXT", "TEST PERSONA")
+
+from bot import app as bot_app
 from bot.vision import (
     ImageObservation,
+    TelegramPhoto,
     build_vision_payload,
     call_vision_api,
     parse_vision_response,
@@ -77,6 +83,22 @@ class VisionPayloadTests(unittest.TestCase):
             )
         )
 
+    def test_system_prompt_includes_grounded_visual_observation(self):
+        observation = ImageObservation(
+            summary="桌上有一杯浅棕色饮品",
+            likely_items=[{"name": "拿铁", "confidence": 0.65}],
+            uncertainties=["无法确认品牌"],
+        )
+
+        prompt = bot_app.build_system_prompt(
+            "PERSONA",
+            image_observation=observation,
+        )
+
+        self.assertIn("桌上有一杯浅棕色饮品", prompt)
+        self.assertIn("confidence 低于 0.7", prompt)
+        self.assertIn("不得补充", prompt)
+
 
 class VisionApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_calls_vision_endpoint_and_parses_observation(self):
@@ -146,6 +168,87 @@ class VisionApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(client.requests), 2)
         self.assertIn("response_format", client.requests[0][1]["json"])
         self.assertNotIn("response_format", client.requests[1][1]["json"])
+
+
+class ImageMessagePipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_image_observation_reaches_language_model_not_binary_history(self):
+        observation = ImageObservation(
+            summary="桌上有一杯冰拿铁",
+            objects=["透明杯", "冰块"],
+            likely_items=[{"name": "冰拿铁", "confidence": 0.82}],
+        )
+        llm_calls = []
+        saved = []
+        sent = []
+
+        async def fake_analyze(photo):
+            return observation
+
+        async def fake_load(chat_id):
+            return []
+
+        async def fake_llm(text, history, image_observation=None):
+            llm_calls.append((text, history, image_observation))
+            return "冰拿铁？\n你还挺会享受"
+
+        async def fake_save(chat_id, history):
+            saved.append((chat_id, history))
+
+        async def fake_send(chat_id, text):
+            sent.append((chat_id, text))
+
+        photo = TelegramPhoto(file_id="large", caption="猜猜我喝的什么")
+        with (
+            patch.object(bot_app, "analyze_telegram_photo", fake_analyze, create=True),
+            patch.object(bot_app, "load_history", fake_load),
+            patch.object(bot_app, "call_llm", fake_llm),
+            patch.object(bot_app, "save_history", fake_save),
+            patch.object(bot_app, "send_telegram_message", fake_send),
+        ):
+            await bot_app.handle_image_message(
+                123,
+                "猜猜我喝的什么",
+                [photo],
+            )
+
+        self.assertEqual(llm_calls[0][0], "猜猜我喝的什么")
+        self.assertIs(llm_calls[0][2], observation)
+        stored_history = saved[0][1]
+        self.assertIn("桌上有一杯冰拿铁", stored_history[0]["content"])
+        self.assertNotIn("data:image", stored_history[0]["content"])
+        self.assertEqual(sent, [(123, "冰拿铁？\n你还挺会享受")])
+
+    async def test_vision_failure_is_passed_as_uncertainty_instead_of_crashing(self):
+        llm_observations = []
+
+        async def failing_analyze(photo):
+            raise RuntimeError("provider unavailable")
+
+        async def fake_load(chat_id):
+            return []
+
+        async def fake_llm(text, history, image_observation=None):
+            llm_observations.append(image_observation)
+            return "图没加载出来\n再发一下"
+
+        async def noop(*args, **kwargs):
+            return None
+
+        with (
+            patch.object(bot_app, "analyze_telegram_photo", failing_analyze, create=True),
+            patch.object(bot_app, "load_history", fake_load),
+            patch.object(bot_app, "call_llm", fake_llm),
+            patch.object(bot_app, "save_history", noop),
+            patch.object(bot_app, "send_telegram_message", noop),
+        ):
+            await bot_app.handle_image_message(
+                123,
+                "看得出来吗",
+                [TelegramPhoto(file_id="large")],
+            )
+
+        self.assertEqual(llm_observations[0].summary, "图片识别结果不可用")
+        self.assertTrue(llm_observations[0].uncertainties)
 
 
 if __name__ == "__main__":
