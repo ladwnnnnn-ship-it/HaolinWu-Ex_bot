@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+from bot.vision_prompts import VISION_EXTRACTION_PROMPT
 
 
 @dataclass(frozen=True)
@@ -95,3 +98,67 @@ async def download_telegram_photo(
     if mime_type not in {"image/jpeg", "image/png", "image/webp"}:
         raise ValueError(f"Unsupported image MIME type: {mime_type}")
     return image_bytes, mime_type
+
+
+def build_vision_payload(
+    image_bytes: bytes,
+    mime_type: str,
+    caption: str,
+    model: str,
+) -> dict[str, Any]:
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return {
+        "model": model,
+        "temperature": 0,
+        "max_tokens": 700,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            f"{VISION_EXTRACTION_PROMPT}\n\n"
+                            f"用户附言：{caption or '(无)'}"
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{encoded}",
+                            "detail": "high",
+                        },
+                    },
+                ],
+            }
+        ],
+    }
+
+
+async def call_vision_api(
+    image_bytes: bytes,
+    mime_type: str,
+    caption: str,
+    api_base: str,
+    api_key: str,
+    model: str,
+    client: Any,
+) -> ImageObservation:
+    payload = build_vision_payload(image_bytes, mime_type, caption, model)
+    headers = {"Authorization": f"Bearer {api_key}"}
+    endpoint = f"{api_base}/chat/completions"
+    response = await client.post(endpoint, headers=headers, json=payload)
+
+    if (
+        response.status_code == 400
+        and "response_format" in response.text.lower()
+    ):
+        retry_payload = {
+            key: value for key, value in payload.items() if key != "response_format"
+        }
+        response = await client.post(endpoint, headers=headers, json=retry_payload)
+
+    response.raise_for_status()
+    content = response.json()["choices"][0]["message"]["content"]
+    return parse_vision_response(str(content))
