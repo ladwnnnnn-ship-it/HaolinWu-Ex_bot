@@ -7,7 +7,7 @@ import os
 import re
 from collections import Counter
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -16,6 +16,8 @@ from zoneinfo import ZoneInfo
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
+
+from bot.vision import TelegramPhoto, select_telegram_photo
 
 try:
     import redis.asyncio as redis
@@ -83,6 +85,7 @@ _known_chats: set[str] = set()
 @dataclass
 class PendingMessageBuffer:
     messages: list[str]
+    photos: list[TelegramPhoto] = field(default_factory=list)
     version: int = 0
     task: asyncio.Task | None = None
 
@@ -705,7 +708,22 @@ async def handle_buffered_text_message(
     idle_seconds: float | None = None,
     completion_timeout: float | None = None,
 ) -> None:
-    if text.startswith("/"):
+    await handle_buffered_user_message(
+        chat_id,
+        text=text,
+        idle_seconds=idle_seconds,
+        completion_timeout=completion_timeout,
+    )
+
+
+async def handle_buffered_user_message(
+    chat_id: int | str,
+    text: str = "",
+    photo: TelegramPhoto | None = None,
+    idle_seconds: float | None = None,
+    completion_timeout: float | None = None,
+) -> None:
+    if text.startswith("/") and photo is None:
         await clear_pending_message_buffer(chat_id)
         await handle_text_message(chat_id, text)
         return
@@ -716,7 +734,10 @@ async def handle_buffered_text_message(
         state = PendingMessageBuffer(messages=[])
         _pending_message_buffers[key] = state
 
-    state.messages.append(text)
+    if text:
+        state.messages.append(text)
+    if photo is not None:
+        state.photos.append(photo)
     state.version += 1
     current_version = state.version
 
@@ -737,13 +758,25 @@ async def handle_buffered_text_message(
             return
 
         combined_text = "\n".join(latest.messages)
+        photos = list(latest.photos)
         _pending_message_buffers.pop(key, None)
-        await handle_text_message(chat_id, combined_text)
+        if photos:
+            await handle_image_message(chat_id, combined_text, photos)
+        else:
+            await handle_text_message(chat_id, combined_text)
 
     if state.task and not state.task.done():
         state.task.cancel()
     latest_messages = list(state.messages)
     state.task = asyncio.create_task(flush_if_idle())
+
+
+async def handle_image_message(
+    chat_id: int | str,
+    text: str,
+    photos: list[TelegramPhoto],
+) -> None:
+    await handle_text_message(chat_id, text or "[发送了一张图片]")
 
 
 async def call_llm(user_text: str, history: list[dict[str, str]]) -> str:
@@ -1045,12 +1078,13 @@ async def telegram_webhook(
 
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
-    text = (message.get("text") or "").strip()
-    if chat_id is None or not text:
+    text = (message.get("text") or message.get("caption") or "").strip()
+    photo = select_telegram_photo(message)
+    if chat_id is None or (not text and photo is None):
         return {"ok": True}
 
     await record_user_chat_activity(chat_id)
-    await handle_buffered_text_message(chat_id, text)
+    await handle_buffered_user_message(chat_id, text=text, photo=photo)
     return {"ok": True}
 
 
