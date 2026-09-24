@@ -29,6 +29,9 @@ LLM_API_BASE=https://your-openai-compatible-api/v1
 LLM_API_KEY=...
 LLM_MODEL=...
 PERSONA_PATH=exes/demosense/SKILL.md
+VISION_API_BASE=https://api.deepseek.com/v1
+VISION_API_KEY=...
+VISION_MODEL=deepseek-flash
 ```
 
 Optional:
@@ -37,6 +40,8 @@ Optional:
 REDIS_URL=...
 HISTORY_TURNS=12
 REQUEST_TIMEOUT=60
+VISION_TIMEOUT=45
+VISION_MAX_IMAGE_BYTES=8388608
 ```
 
 If you do not set `REDIS_URL`, the service uses in-memory history. On Render Free this history is lost when the service restarts or sleeps.
@@ -62,6 +67,16 @@ https://your-render-service.onrender.com/health
 ```
 
 Then send `/start` to the Telegram bot.
+
+Send a photo with a caption such as `猜猜我喝的什么`. The bot downloads the
+largest Telegram photo, asks the configured vision model for grounded JSON, and
+then lets the persona language model write the final reply. Image bytes are not
+stored in Redis or chat history.
+
+If the language and vision calls use the same DeepSeek account, `VISION_API_KEY`
+and `VISION_API_BASE` may be omitted; they inherit `LLM_API_KEY` and
+`LLM_API_BASE`. Keep `VISION_MODEL=deepseek-flash` explicit so a later language
+model change does not silently disable image input.
 
 ## Free plan note
 

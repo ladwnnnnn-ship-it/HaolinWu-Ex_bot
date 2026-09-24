@@ -1,3 +1,4 @@
+import logging
 import os
 import unittest
 from unittest.mock import patch
@@ -249,6 +250,39 @@ class ImageMessagePipelineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(llm_observations[0].summary, "图片识别结果不可用")
         self.assertTrue(llm_observations[0].uncertainties)
+
+
+class VisionHealthTests(unittest.IsolatedAsyncioTestCase):
+    async def test_health_reports_vision_configuration_without_key(self):
+        originals = (
+            bot_app.settings.vision_api_base,
+            bot_app.settings.vision_api_key,
+            bot_app.settings.vision_model,
+        )
+        (
+            bot_app.settings.vision_api_base,
+            bot_app.settings.vision_api_key,
+            bot_app.settings.vision_model,
+        ) = (
+            "https://api.deepseek.com/v1",
+            "super-secret",
+            "deepseek-flash",
+        )
+        try:
+            result = await bot_app.health()
+        finally:
+            (
+                bot_app.settings.vision_api_base,
+                bot_app.settings.vision_api_key,
+                bot_app.settings.vision_model,
+            ) = originals
+
+        self.assertEqual(result["vision"]["configured"], True)
+        self.assertEqual(result["vision"]["model"], "deepseek-flash")
+        self.assertNotIn("super-secret", repr(result))
+
+    def test_httpx_info_logging_is_disabled_to_protect_bot_token(self):
+        self.assertGreaterEqual(logging.getLogger("httpx").level, logging.WARNING)
 
 
 if __name__ == "__main__":

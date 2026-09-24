@@ -35,6 +35,7 @@ except Exception:  # pragma: no cover - redis is optional at import time
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ex-skill-bot")
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 class Settings(BaseModel):
@@ -1125,6 +1126,15 @@ async def health() -> dict[str, Any]:
             "loaded": MEMORY_INDEX.loaded,
             "count": MEMORY_INDEX.count,
             "snippet_limit": settings.memory_snippet_limit,
+        },
+        "vision": {
+            "configured": bool(
+                settings.vision_api_base
+                and settings.vision_api_key
+                and settings.vision_model
+            ),
+            "model": settings.vision_model,
+            "max_image_bytes": settings.vision_max_image_bytes,
         },
         "proactive": {
             "timezone": settings.proactive_timezone,
