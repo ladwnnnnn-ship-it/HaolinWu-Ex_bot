@@ -95,6 +95,8 @@ async def download_telegram_photo(
     if len(image_bytes) > max_bytes:
         raise ValueError("Downloaded image exceeds VISION_MAX_IMAGE_BYTES")
     mime_type = image_response.headers.get("content-type", "image/jpeg").split(";")[0]
+    if mime_type == "application/octet-stream" and image_bytes.startswith(b"\xff\xd8\xff"):
+        mime_type = "image/jpeg"
     if mime_type not in {"image/jpeg", "image/png", "image/webp"}:
         raise ValueError(f"Unsupported image MIME type: {mime_type}")
     return image_bytes, mime_type

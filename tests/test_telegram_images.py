@@ -99,6 +99,33 @@ class TelegramPhotoDownloadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(client.requests, [])
 
+    async def test_detects_jpeg_when_telegram_uses_octet_stream(self):
+        jpeg_bytes = b"\xff\xd8\xff\xe0jpeg-data"
+        client = FakeClient(
+            [
+                FakeResponse(json_data={"result": {"file_path": "photos/example.jpg"}}),
+                FakeResponse(
+                    content=jpeg_bytes,
+                    content_type="application/octet-stream",
+                ),
+            ]
+        )
+        photo = TelegramPhoto(file_id="large", declared_size=len(jpeg_bytes))
+
+        try:
+            image_bytes, mime_type = await download_telegram_photo(
+                photo,
+                telegram_api="https://api.telegram.org/botTOKEN",
+                bot_token="TOKEN",
+                client=client,
+                max_bytes=100,
+            )
+        except ValueError as exc:
+            self.fail(f"JPEG bytes should override a generic content type: {exc}")
+
+        self.assertEqual(image_bytes, jpeg_bytes)
+        self.assertEqual(mime_type, "image/jpeg")
+
     async def test_rejects_unsupported_mime_type(self):
         client = FakeClient(
             [
