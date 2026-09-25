@@ -279,11 +279,12 @@ class ImageMessagePipelineTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot_app, "save_history", fake_save),
             patch.object(bot_app, "send_telegram_message", fake_send),
         ):
-            await bot_app.handle_image_message(
-                123,
-                "猜猜我喝的什么",
-                [photo],
-            )
+            with self.assertLogs("ex-skill-bot", level="INFO") as captured_logs:
+                await bot_app.handle_image_message(
+                    123,
+                    "猜猜我喝的什么",
+                    [photo],
+                )
 
         self.assertEqual(llm_calls[0][0], "猜猜我喝的什么")
         self.assertIs(llm_calls[0][2], observation)
@@ -293,6 +294,9 @@ class ImageMessagePipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("桌上有一杯冰拿铁", stored_history[0]["content"])
         self.assertNotIn("data:image", stored_history[0]["content"])
         self.assertEqual(sent, [(123, "冰拿铁？\n你还挺会享受")])
+        self.assertTrue(
+            any("Image turn timing:" in entry for entry in captured_logs.output)
+        )
 
     async def test_vision_failure_is_passed_as_uncertainty_instead_of_crashing(self):
         llm_observations = []

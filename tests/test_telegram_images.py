@@ -148,6 +148,7 @@ class TelegramPhotoDownloadTests(unittest.IsolatedAsyncioTestCase):
 class TelegramImageBufferTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         bot_app._pending_message_buffers.clear()
+        bot_app._chat_processing_locks.clear()
 
     async def asyncTearDown(self):
         for state in bot_app._pending_message_buffers.values():
@@ -162,6 +163,7 @@ class TelegramImageBufferTests(unittest.IsolatedAsyncioTestCase):
             return_exceptions=True,
         )
         bot_app._pending_message_buffers.clear()
+        bot_app._chat_processing_locks.clear()
 
     async def test_buffers_photo_with_followup_text_as_one_turn(self):
         handled = []
@@ -213,6 +215,55 @@ class TelegramImageBufferTests(unittest.IsolatedAsyncioTestCase):
             bot_app.handle_image_message = original
 
         self.assertEqual(handled, [(123, "", [photo])])
+
+    async def test_next_text_waits_for_inflight_image_turn_in_same_chat(self):
+        events = []
+        image_started = asyncio.Event()
+        release_image = asyncio.Event()
+        image_finished = asyncio.Event()
+        text_started = asyncio.Event()
+        text_finished = asyncio.Event()
+
+        async def fake_handle_image(chat_id, text, photos):
+            events.append("image_start")
+            image_started.set()
+            await release_image.wait()
+            events.append("image_end")
+            image_finished.set()
+
+        async def fake_handle_text(chat_id, text):
+            events.append("text")
+            text_started.set()
+            text_finished.set()
+
+        original_image = bot_app.handle_image_message
+        original_text = bot_app.handle_text_message
+        bot_app.handle_image_message = fake_handle_image
+        bot_app.handle_text_message = fake_handle_text
+        try:
+            await bot_app.handle_buffered_user_message(
+                456,
+                photo=TelegramPhoto(file_id="large"),
+                idle_seconds=0,
+            )
+            await asyncio.wait_for(image_started.wait(), timeout=0.2)
+            await bot_app.handle_buffered_user_message(
+                456,
+                text="我已经发了",
+                idle_seconds=0,
+            )
+            await asyncio.sleep(0.03)
+            text_started_before_image_finished = text_started.is_set()
+            release_image.set()
+            await asyncio.wait_for(image_finished.wait(), timeout=0.2)
+            await asyncio.wait_for(text_finished.wait(), timeout=0.2)
+        finally:
+            release_image.set()
+            bot_app.handle_image_message = original_image
+            bot_app.handle_text_message = original_text
+
+        self.assertFalse(text_started_before_image_finished)
+        self.assertEqual(events, ["image_start", "image_end", "text"])
 
 
 class TelegramImageWebhookTests(unittest.IsolatedAsyncioTestCase):

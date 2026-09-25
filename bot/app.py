@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections import Counter
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -113,6 +114,16 @@ class PendingMessageBuffer:
 
 
 _pending_message_buffers: dict[str, PendingMessageBuffer] = {}
+_chat_processing_locks: dict[str, asyncio.Lock] = {}
+
+
+def chat_processing_lock(chat_id: int | str) -> asyncio.Lock:
+    key = str(chat_id)
+    lock = _chat_processing_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _chat_processing_locks[key] = lock
+    return lock
 
 UNFINISHED_MESSAGE_SUFFIXES = (
     "然后",
@@ -795,10 +806,11 @@ async def handle_buffered_user_message(
         combined_text = "\n".join(latest.messages)
         photos = list(latest.photos)
         _pending_message_buffers.pop(key, None)
-        if photos:
-            await handle_image_message(chat_id, combined_text, photos)
-        else:
-            await handle_text_message(chat_id, combined_text)
+        async with chat_processing_lock(chat_id):
+            if photos:
+                await handle_image_message(chat_id, combined_text, photos)
+            else:
+                await handle_text_message(chat_id, combined_text)
 
     if state.task and not state.task.done():
         state.task.cancel()
@@ -811,6 +823,8 @@ async def handle_image_message(
     text: str,
     photos: list[TelegramPhoto],
 ) -> None:
+    turn_started = time.perf_counter()
+    vision_started = time.perf_counter()
     try:
         observation = await analyze_telegram_photo(photos[0])
     except Exception as exc:
@@ -820,14 +834,23 @@ async def handle_image_message(
             exc,
         )
         observation = unavailable_observation("暂时无法读取这张图片")
+    vision_seconds = time.perf_counter() - vision_started
 
     history = await load_history(chat_id)
     user_text = text or "用户发送了一张图片"
+    language_started = time.perf_counter()
     try:
         reply = await call_llm(user_text, history, observation)
     except Exception:
         logger.exception("Failed to generate image reply")
         reply = "呃\n卡住了"
+    language_seconds = time.perf_counter() - language_started
+    logger.info(
+        "Image turn timing: vision=%.2fs language=%.2fs total=%.2fs",
+        vision_seconds,
+        language_seconds,
+        time.perf_counter() - turn_started,
+    )
 
     stored_user_text = text or "[发送了一张图片]"
     history.append({"role": "user", "content": stored_user_text})
