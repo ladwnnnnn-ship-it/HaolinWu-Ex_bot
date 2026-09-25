@@ -854,11 +854,14 @@ async def handle_image_message(
     history = await load_history(chat_id)
     user_text = text or "用户发送了一张图片"
     language_started = time.perf_counter()
-    try:
-        reply = await call_llm(user_text, history, observation)
-    except Exception:
-        logger.exception("Failed to generate image reply")
-        reply = "呃\n卡住了"
+    if observation_available:
+        try:
+            reply = await call_llm(user_text, history, observation)
+        except Exception:
+            logger.exception("Failed to generate image reply")
+            reply = "呃\n卡住了"
+    else:
+        reply = "我这边没读出来\n你再发一下"
     language_seconds = time.perf_counter() - language_started
     logger.info(
         "Image turn timing: vision=%.2fs language=%.2fs total=%.2fs",

@@ -57,11 +57,18 @@ def unavailable_observation(reason: str) -> ImageObservation:
 
 def parse_vision_response(raw: str) -> ImageObservation:
     try:
-        data = json.loads(raw)
+        text = raw.strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            object_start = text.find("{")
+            if object_start < 0:
+                raise
+            data, _ = json.JSONDecoder().raw_decode(text[object_start:])
         if not isinstance(data, dict):
             raise ValueError("vision response is not an object")
         return ImageObservation(
-            summary=str(data.get("summary") or "图片内容未能确定"),
+            summary=str(data.get("summary") or ""),
             visible_text=[str(item) for item in data.get("visible_text", [])],
             objects=[str(item) for item in data.get("objects", [])],
             likely_items=[
@@ -71,6 +78,21 @@ def parse_vision_response(raw: str) -> ImageObservation:
         )
     except (json.JSONDecodeError, TypeError, ValueError):
         return unavailable_observation("视觉 API 未返回有效 JSON")
+
+
+def vision_message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            text = part.get("text")
+            if isinstance(text, str):
+                text_parts.append(text)
+        return "\n".join(text_parts)
+    return str(content)
 
 
 def select_telegram_photo(message: dict[str, Any]) -> TelegramPhoto | None:
@@ -134,6 +156,7 @@ def build_vision_payload(
         "model": model,
         "temperature": 0,
         "max_tokens": 700,
+        "thinking": {"type": "disabled"},
         "response_format": {"type": "json_object"},
         "messages": [
             {
@@ -184,4 +207,4 @@ async def call_vision_api(
 
     response.raise_for_status()
     content = response.json()["choices"][0]["message"]["content"]
-    return parse_vision_response(str(content))
+    return parse_vision_response(vision_message_text(content))

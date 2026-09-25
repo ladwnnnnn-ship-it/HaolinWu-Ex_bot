@@ -68,6 +68,30 @@ class VisionResponseTests(unittest.TestCase):
         self.assertEqual(result.likely_items, [])
         self.assertTrue(result.uncertainties)
 
+    def test_valid_but_empty_observation_stays_unavailable(self):
+        raw = '{"summary":"","visible_text":[],"objects":[],"likely_items":[],"uncertainties":["无法辨认"]}'
+
+        result = parse_vision_response(raw)
+
+        self.assertEqual(result.summary, "")
+        self.assertEqual(result.uncertainties, ["无法辨认"])
+
+    def test_parses_json_wrapped_in_markdown_fence(self):
+        raw = '''```json
+        {
+          "summary": "一张聊天截图",
+          "visible_text": ["这是啥"],
+          "objects": ["聊天窗口"],
+          "likely_items": [],
+          "uncertainties": []
+        }
+        ```'''
+
+        result = parse_vision_response(raw)
+
+        self.assertEqual(result.summary, "一张聊天截图")
+        self.assertEqual(result.visible_text, ["这是啥"])
+
 
 class VisionPayloadTests(unittest.IsolatedAsyncioTestCase):
     def test_detects_internal_vision_language_variants(self):
@@ -84,6 +108,7 @@ class VisionPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(payload["model"], "deepseek-flash")
         self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertEqual(payload["thinking"], {"type": "disabled"})
         content = payload["messages"][0]["content"]
         self.assertEqual(content[0]["type"], "text")
         self.assertIn("猜猜我喝的什么", content[0]["text"])
@@ -211,6 +236,39 @@ class VisionApiTests(unittest.IsolatedAsyncioTestCase):
             {"Authorization": "Bearer secret"},
         )
 
+    async def test_parses_text_from_segmented_message_content(self):
+        client = FakeClient(
+            [
+                FakeResponse(
+                    json_data={
+                        "choices": [{
+                            "message": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": '{"summary":"一张聊天截图","visible_text":["这是啥"],"objects":["聊天窗口"],"likely_items":[],"uncertainties":[]}',
+                                    }
+                                ]
+                            }
+                        }]
+                    }
+                )
+            ]
+        )
+
+        result = await call_vision_api(
+            image_bytes=b"jpeg-data",
+            mime_type="image/jpeg",
+            caption="这是啥",
+            api_base="https://api.deepseek.com/v1",
+            api_key="secret",
+            model="deepseek-flash",
+            client=client,
+        )
+
+        self.assertEqual(result.summary, "一张聊天截图")
+        self.assertEqual(result.visible_text, ["这是啥"])
+
     async def test_retries_once_without_response_format_when_rejected(self):
         success_body = {
             "choices": [{
@@ -302,8 +360,10 @@ class ImageMessagePipelineTests(unittest.IsolatedAsyncioTestCase):
             any("Image observation: available=true" in entry for entry in captured_logs.output)
         )
 
-    async def test_vision_failure_is_passed_as_uncertainty_instead_of_crashing(self):
+    async def test_vision_failure_uses_safe_fallback_without_language_model_guessing(self):
         llm_observations = []
+        saved = []
+        sent = []
 
         async def failing_analyze(photo):
             raise RuntimeError("provider unavailable")
@@ -313,17 +373,20 @@ class ImageMessagePipelineTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_llm(text, history, image_observation=None):
             llm_observations.append(image_observation)
-            return "图没加载出来\n再发一下"
+            return "这是一张游戏截图"
 
-        async def noop(*args, **kwargs):
-            return None
+        async def fake_save(chat_id, history):
+            saved.append((chat_id, history))
+
+        async def fake_send(chat_id, text):
+            sent.append((chat_id, text))
 
         with (
             patch.object(bot_app, "analyze_telegram_photo", failing_analyze, create=True),
             patch.object(bot_app, "load_history", fake_load),
             patch.object(bot_app, "call_llm", fake_llm),
-            patch.object(bot_app, "save_history", noop),
-            patch.object(bot_app, "send_telegram_message", noop),
+            patch.object(bot_app, "save_history", fake_save),
+            patch.object(bot_app, "send_telegram_message", fake_send),
         ):
             with self.assertLogs("ex-skill-bot", level="WARNING") as captured_logs:
                 await bot_app.handle_image_message(
@@ -332,8 +395,12 @@ class ImageMessagePipelineTests(unittest.IsolatedAsyncioTestCase):
                     [TelegramPhoto(file_id="large")],
                 )
 
-        self.assertEqual(llm_observations[0].summary, "")
-        self.assertTrue(llm_observations[0].uncertainties)
+        self.assertEqual(llm_observations, [])
+        self.assertEqual(sent, [(123, "我这边没读出来\n你再发一下")])
+        self.assertEqual(
+            saved[0][1][-1],
+            {"role": "assistant", "content": "我这边没读出来\n你再发一下"},
+        )
         self.assertIn("RuntimeError: provider unavailable", captured_logs.output[0])
 
 
