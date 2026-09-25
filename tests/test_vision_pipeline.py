@@ -111,6 +111,7 @@ class VisionPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("confidence 低于 0.7", prompt)
         self.assertIn("不得补充", prompt)
         self.assertIn("只输出该 Persona 最终会发送给用户的话", prompt)
+        self.assertIn("不得声称自己看不到图片", prompt)
         self.assertNotIn('"likely_items"', prompt)
 
     async def test_rewrites_image_reply_that_leaks_internal_analysis(self):
@@ -296,6 +297,9 @@ class ImageMessagePipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent, [(123, "冰拿铁？\n你还挺会享受")])
         self.assertTrue(
             any("Image turn timing:" in entry for entry in captured_logs.output)
+        )
+        self.assertTrue(
+            any("Image observation: available=true" in entry for entry in captured_logs.output)
         )
 
     async def test_vision_failure_is_passed_as_uncertainty_instead_of_crashing(self):
