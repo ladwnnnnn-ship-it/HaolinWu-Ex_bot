@@ -814,7 +814,11 @@ async def handle_image_message(
     try:
         observation = await analyze_telegram_photo(photos[0])
     except Exception as exc:
-        logger.warning("Vision processing failed: %s", type(exc).__name__)
+        logger.warning(
+            "Vision processing failed: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
         observation = unavailable_observation("暂时无法读取这张图片")
 
     history = await load_history(chat_id)

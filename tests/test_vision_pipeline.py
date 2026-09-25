@@ -242,14 +242,16 @@ class ImageMessagePipelineTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot_app, "save_history", noop),
             patch.object(bot_app, "send_telegram_message", noop),
         ):
-            await bot_app.handle_image_message(
-                123,
-                "看得出来吗",
-                [TelegramPhoto(file_id="large")],
-            )
+            with self.assertLogs("ex-skill-bot", level="WARNING") as captured_logs:
+                await bot_app.handle_image_message(
+                    123,
+                    "看得出来吗",
+                    [TelegramPhoto(file_id="large")],
+                )
 
         self.assertEqual(llm_observations[0].summary, "图片识别结果不可用")
         self.assertTrue(llm_observations[0].uncertainties)
+        self.assertIn("RuntimeError: provider unavailable", captured_logs.output[0])
 
 
 class VisionHealthTests(unittest.IsolatedAsyncioTestCase):
