@@ -38,6 +38,12 @@ class FakeClient:
         self.requests.append((url, kwargs))
         return self.responses.pop(0)
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
 
 class VisionResponseTests(unittest.TestCase):
     def test_parses_grounded_image_observation(self):
@@ -58,12 +64,16 @@ class VisionResponseTests(unittest.TestCase):
     def test_invalid_json_becomes_uncertain_observation(self):
         result = parse_vision_response("not json")
 
-        self.assertEqual(result.summary, "图片识别结果不可用")
+        self.assertEqual(result.summary, "")
         self.assertEqual(result.likely_items, [])
         self.assertTrue(result.uncertainties)
 
 
-class VisionPayloadTests(unittest.TestCase):
+class VisionPayloadTests(unittest.IsolatedAsyncioTestCase):
+    def test_detects_internal_vision_language_variants(self):
+        self.assertTrue(bot_app.leaks_internal_vision_language("候选可信度 0.82"))
+        self.assertFalse(bot_app.leaks_internal_vision_language("看着像一杯冰拿铁"))
+
     def test_builds_deepseek_flash_multimodal_payload(self):
         payload = build_vision_payload(
             image_bytes=b"jpeg-data",
@@ -97,8 +107,71 @@ class VisionPayloadTests(unittest.TestCase):
         )
 
         self.assertIn("桌上有一杯浅棕色饮品", prompt)
+        self.assertIn("<internal_image_evidence>", prompt)
         self.assertIn("confidence 低于 0.7", prompt)
         self.assertIn("不得补充", prompt)
+        self.assertIn("只输出该 Persona 最终会发送给用户的话", prompt)
+        self.assertNotIn('"likely_items"', prompt)
+
+    async def test_rewrites_image_reply_that_leaks_internal_analysis(self):
+        observation = ImageObservation(summary="图片中是一份考试通知")
+        client = FakeClient(
+            [
+                FakeResponse(
+                    json_data={
+                        "choices": [{
+                            "message": {
+                                "content": "图片识别结果显示这是一份考试通知"
+                            }
+                        }]
+                    }
+                ),
+                FakeResponse(
+                    json_data={
+                        "choices": [{
+                            "message": {"content": "你考了85诶\n还挺厉害"}
+                        }]
+                    }
+                ),
+            ]
+        )
+        original_key = bot_app.settings.llm_api_key
+        bot_app.settings.llm_api_key = "secret"
+        try:
+            with patch.object(bot_app.httpx, "AsyncClient", return_value=client):
+                reply = await bot_app.call_llm(
+                    "读出这些文字",
+                    [],
+                    observation,
+                )
+        finally:
+            bot_app.settings.llm_api_key = original_key
+
+        self.assertEqual(reply, "你考了85诶\n还挺厉害")
+        self.assertEqual(len(client.requests), 2)
+        retry_messages = client.requests[1][1]["json"]["messages"]
+        self.assertIn("只重写上一条回复", retry_messages[-1]["content"])
+
+    async def test_uses_safe_fallback_when_rewrite_still_leaks(self):
+        observation = ImageObservation(summary="图片中是一份考试通知")
+        leaking_response = FakeResponse(
+            json_data={
+                "choices": [{
+                    "message": {"content": "图片识别结果的置信度很高"}
+                }]
+            }
+        )
+        client = FakeClient([leaking_response, leaking_response])
+        original_key = bot_app.settings.llm_api_key
+        bot_app.settings.llm_api_key = "secret"
+        try:
+            with self.assertLogs("ex-skill-bot", level="WARNING"):
+                with patch.object(bot_app.httpx, "AsyncClient", return_value=client):
+                    reply = await bot_app.call_llm("这是什么", [], observation)
+        finally:
+            bot_app.settings.llm_api_key = original_key
+
+        self.assertEqual(reply, "我看到了\n你想让我先说哪部分")
 
 
 class VisionApiTests(unittest.IsolatedAsyncioTestCase):
@@ -215,7 +288,9 @@ class ImageMessagePipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(llm_calls[0][0], "猜猜我喝的什么")
         self.assertIs(llm_calls[0][2], observation)
         stored_history = saved[0][1]
-        self.assertIn("桌上有一杯冰拿铁", stored_history[0]["content"])
+        self.assertEqual(stored_history[0]["content"], "猜猜我喝的什么")
+        self.assertNotIn("图片观察摘要", stored_history[0]["content"])
+        self.assertNotIn("桌上有一杯冰拿铁", stored_history[0]["content"])
         self.assertNotIn("data:image", stored_history[0]["content"])
         self.assertEqual(sent, [(123, "冰拿铁？\n你还挺会享受")])
 
@@ -249,7 +324,7 @@ class ImageMessagePipelineTests(unittest.IsolatedAsyncioTestCase):
                     [TelegramPhoto(file_id="large")],
                 )
 
-        self.assertEqual(llm_observations[0].summary, "图片识别结果不可用")
+        self.assertEqual(llm_observations[0].summary, "")
         self.assertTrue(llm_observations[0].uncertainties)
         self.assertIn("RuntimeError: provider unavailable", captured_logs.output[0])
 

@@ -240,7 +240,7 @@ def build_system_prompt(
     if image_observation is not None:
         image_block = (
             f"{PERSONA_IMAGE_RULES}\n"
-            f"{image_observation.to_prompt_text()}"
+            f"{image_observation.to_internal_evidence()}"
         )
     return f"""
 You are running a Telegram bot persona.
@@ -830,7 +830,6 @@ async def handle_image_message(
         reply = "呃\n卡住了"
 
     stored_user_text = text or "[发送了一张图片]"
-    stored_user_text += f"\n[图片观察摘要] {observation.summary}"
     history.append({"role": "user", "content": stored_user_text})
     history.append({"role": "assistant", "content": reply})
     await save_history(chat_id, history)
@@ -898,13 +897,66 @@ async def call_llm(
         )
         response.raise_for_status()
         data = response.json()
+        reply = extract_chat_completion_content(data) or "。"
 
+        if image_observation is not None and leaks_internal_vision_language(reply):
+            retry_messages = [
+                *messages,
+                {"role": "assistant", "content": reply},
+                {
+                    "role": "user",
+                    "content": (
+                        "只重写上一条回复。只保留这个 Persona 会自然发给用户的话，"
+                        "删除所有关于识图、模型、内部证据、字段和置信度的表述。"
+                    ),
+                },
+            ]
+            retry_payload = {
+                **payload,
+                "messages": retry_messages,
+                "temperature": 0.4,
+            }
+            response = await client.post(
+                f"{settings.llm_api_base}/chat/completions",
+                headers=headers,
+                json=retry_payload,
+            )
+            response.raise_for_status()
+            reply = extract_chat_completion_content(response.json()) or "。"
+
+    if image_observation is not None and leaks_internal_vision_language(reply):
+        logger.warning("Image reply still contained internal vision language after rewrite")
+        if image_observation.summary:
+            return "我看到了\n你想让我先说哪部分"
+        return "我这边没看清\n你再发一下"
+    return reply
+
+
+VISION_LANGUAGE_LEAK_MARKERS = (
+    "图片识别结果",
+    "视觉模型",
+    "识图模型",
+    "识图结果",
+    "内部视觉证据",
+    "internal_image_evidence",
+    "likely_items",
+    "uncertainties",
+    "置信度",
+    "可信度",
+)
+
+
+def leaks_internal_vision_language(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker.lower() in lowered for marker in VISION_LANGUAGE_LEAK_MARKERS)
+
+
+def extract_chat_completion_content(data: dict[str, Any]) -> str:
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(f"Unexpected LLM response: {data}") from exc
-
-    return str(content).strip() or "。"
+    return str(content).strip()
 
 
 async def call_chat_completion(

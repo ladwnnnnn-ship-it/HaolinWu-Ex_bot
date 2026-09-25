@@ -19,6 +19,27 @@ class ImageObservation:
     def to_prompt_text(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
 
+    def to_internal_evidence(self) -> str:
+        lines = ["<internal_image_evidence>"]
+        if self.summary:
+            lines.append(f"直接观察：{self.summary}")
+        if self.visible_text:
+            lines.append(f"清晰可见文字：{'；'.join(self.visible_text)}")
+        if self.objects:
+            lines.append(f"物体与特征：{'；'.join(self.objects)}")
+        if self.likely_items:
+            candidates = []
+            for item in self.likely_items:
+                name = str(item.get("name") or "未知候选")
+                confidence = item.get("confidence")
+                suffix = f"（可信度 {confidence}）" if confidence is not None else ""
+                candidates.append(f"{name}{suffix}")
+            lines.append(f"不确定候选：{'；'.join(candidates)}")
+        if self.uncertainties:
+            lines.append(f"不确定事项：{'；'.join(self.uncertainties)}")
+        lines.append("</internal_image_evidence>")
+        return "\n".join(lines)
+
 
 @dataclass(frozen=True)
 class TelegramPhoto:
@@ -29,8 +50,8 @@ class TelegramPhoto:
 
 def unavailable_observation(reason: str) -> ImageObservation:
     return ImageObservation(
-        summary="图片识别结果不可用",
-        uncertainties=[reason],
+        summary="",
+        uncertainties=["附件内容无法可靠读取"],
     )
 
 
