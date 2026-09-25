@@ -7,7 +7,7 @@ import os
 import re
 from collections import Counter
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +17,16 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
+from bot.vision import (
+    ImageObservation,
+    TelegramPhoto,
+    call_vision_api,
+    download_telegram_photo,
+    select_telegram_photo,
+    unavailable_observation,
+)
+from bot.vision_prompts import PERSONA_IMAGE_RULES
+
 try:
     import redis.asyncio as redis
 except Exception:  # pragma: no cover - redis is optional at import time
@@ -25,6 +35,7 @@ except Exception:  # pragma: no cover - redis is optional at import time
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ex-skill-bot")
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 class Settings(BaseModel):
@@ -35,6 +46,19 @@ class Settings(BaseModel):
     llm_api_key: str = os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", ""))
     llm_api_base: str = os.getenv("LLM_API_BASE", "https://api.openai.com/v1").rstrip("/")
     llm_model: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    vision_api_key: str = os.getenv(
+        "VISION_API_KEY",
+        os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", "")),
+    )
+    vision_api_base: str = os.getenv(
+        "VISION_API_BASE",
+        os.getenv("LLM_API_BASE", "https://api.deepseek.com/v1"),
+    ).rstrip("/")
+    vision_model: str = os.getenv("VISION_MODEL", "deepseek-flash")
+    vision_timeout: float = float(os.getenv("VISION_TIMEOUT", "45"))
+    vision_max_image_bytes: int = int(
+        os.getenv("VISION_MAX_IMAGE_BYTES", str(8 * 1024 * 1024))
+    )
     persona_path: str = os.getenv(
         "PERSONA_PATH",
         "exes/demosense/SKILL.md",
@@ -83,6 +107,7 @@ _known_chats: set[str] = set()
 @dataclass
 class PendingMessageBuffer:
     messages: list[str]
+    photos: list[TelegramPhoto] = field(default_factory=list)
     version: int = 0
     task: asyncio.Task | None = None
 
@@ -204,9 +229,19 @@ def retrieve_memory_snippets(
     return [line for _, _, line in scored[:max_results]]
 
 
-def build_system_prompt(persona_prompt: str, memory_snippets: list[str] | None = None) -> str:
+def build_system_prompt(
+    persona_prompt: str,
+    memory_snippets: list[str] | None = None,
+    image_observation: ImageObservation | None = None,
+) -> str:
     snippets = memory_snippets or []
     memory_block = "\n".join(snippets) if snippets else "(none retrieved for this message)"
+    image_block = "(no image in this turn)"
+    if image_observation is not None:
+        image_block = (
+            f"{PERSONA_IMAGE_RULES}\n"
+            f"{image_observation.to_prompt_text()}"
+        )
     return f"""
 You are running a Telegram bot persona.
 
@@ -223,6 +258,9 @@ Persona:
 
 Raw retrieved chat-memory snippets:
 {memory_block}
+
+Grounded image observation:
+{image_block}
 """.strip()
 
 
@@ -705,7 +743,22 @@ async def handle_buffered_text_message(
     idle_seconds: float | None = None,
     completion_timeout: float | None = None,
 ) -> None:
-    if text.startswith("/"):
+    await handle_buffered_user_message(
+        chat_id,
+        text=text,
+        idle_seconds=idle_seconds,
+        completion_timeout=completion_timeout,
+    )
+
+
+async def handle_buffered_user_message(
+    chat_id: int | str,
+    text: str = "",
+    photo: TelegramPhoto | None = None,
+    idle_seconds: float | None = None,
+    completion_timeout: float | None = None,
+) -> None:
+    if text.startswith("/") and photo is None:
         await clear_pending_message_buffer(chat_id)
         await handle_text_message(chat_id, text)
         return
@@ -716,7 +769,10 @@ async def handle_buffered_text_message(
         state = PendingMessageBuffer(messages=[])
         _pending_message_buffers[key] = state
 
-    state.messages.append(text)
+    if text:
+        state.messages.append(text)
+    if photo is not None:
+        state.photos.append(photo)
     state.version += 1
     current_version = state.version
 
@@ -737,8 +793,12 @@ async def handle_buffered_text_message(
             return
 
         combined_text = "\n".join(latest.messages)
+        photos = list(latest.photos)
         _pending_message_buffers.pop(key, None)
-        await handle_text_message(chat_id, combined_text)
+        if photos:
+            await handle_image_message(chat_id, combined_text, photos)
+        else:
+            await handle_text_message(chat_id, combined_text)
 
     if state.task and not state.task.done():
         state.task.cancel()
@@ -746,12 +806,74 @@ async def handle_buffered_text_message(
     state.task = asyncio.create_task(flush_if_idle())
 
 
-async def call_llm(user_text: str, history: list[dict[str, str]]) -> str:
+async def handle_image_message(
+    chat_id: int | str,
+    text: str,
+    photos: list[TelegramPhoto],
+) -> None:
+    try:
+        observation = await analyze_telegram_photo(photos[0])
+    except Exception as exc:
+        logger.warning("Vision processing failed: %s", type(exc).__name__)
+        observation = unavailable_observation("暂时无法读取这张图片")
+
+    history = await load_history(chat_id)
+    user_text = text or "用户发送了一张图片"
+    try:
+        reply = await call_llm(user_text, history, observation)
+    except Exception:
+        logger.exception("Failed to generate image reply")
+        reply = "呃\n卡住了"
+
+    stored_user_text = text or "[发送了一张图片]"
+    stored_user_text += f"\n[图片观察摘要] {observation.summary}"
+    history.append({"role": "user", "content": stored_user_text})
+    history.append({"role": "assistant", "content": reply})
+    await save_history(chat_id, history)
+    await send_telegram_message(chat_id, reply)
+
+
+async def analyze_telegram_photo(photo: TelegramPhoto) -> ImageObservation:
+    if not (
+        settings.vision_api_base
+        and settings.vision_api_key
+        and settings.vision_model
+    ):
+        raise RuntimeError("Vision API is not configured")
+
+    async with httpx.AsyncClient(timeout=settings.vision_timeout) as client:
+        image_bytes, mime_type = await download_telegram_photo(
+            photo,
+            telegram_api=settings.telegram_api,
+            bot_token=settings.telegram_bot_token,
+            client=client,
+            max_bytes=settings.vision_max_image_bytes,
+        )
+        return await call_vision_api(
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            caption=photo.caption,
+            api_base=settings.vision_api_base,
+            api_key=settings.vision_api_key,
+            model=settings.vision_model,
+            client=client,
+        )
+
+
+async def call_llm(
+    user_text: str,
+    history: list[dict[str, str]],
+    image_observation: ImageObservation | None = None,
+) -> str:
     if not settings.llm_api_key:
         return "呃\n还没配 API key"
 
     memory_snippets = retrieve_memory_snippets(user_text, MEMORY_INDEX)
-    system_prompt = build_system_prompt(PERSONA_PROMPT, memory_snippets)
+    system_prompt = build_system_prompt(
+        PERSONA_PROMPT,
+        memory_snippets,
+        image_observation=image_observation,
+    )
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
     messages.append({"role": "user", "content": user_text})
@@ -1005,6 +1127,15 @@ async def health() -> dict[str, Any]:
             "count": MEMORY_INDEX.count,
             "snippet_limit": settings.memory_snippet_limit,
         },
+        "vision": {
+            "configured": bool(
+                settings.vision_api_base
+                and settings.vision_api_key
+                and settings.vision_model
+            ),
+            "model": settings.vision_model,
+            "max_image_bytes": settings.vision_max_image_bytes,
+        },
         "proactive": {
             "timezone": settings.proactive_timezone,
             "min_idle_hours": settings.proactive_min_idle_hours,
@@ -1045,12 +1176,13 @@ async def telegram_webhook(
 
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
-    text = (message.get("text") or "").strip()
-    if chat_id is None or not text:
+    text = (message.get("text") or message.get("caption") or "").strip()
+    photo = select_telegram_photo(message)
+    if chat_id is None or (not text and photo is None):
         return {"ok": True}
 
     await record_user_chat_activity(chat_id)
-    await handle_buffered_text_message(chat_id, text)
+    await handle_buffered_user_message(chat_id, text=text, photo=photo)
     return {"ok": True}
 
 

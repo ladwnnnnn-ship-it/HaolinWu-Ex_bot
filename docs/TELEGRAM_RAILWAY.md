@@ -21,6 +21,11 @@ PUBLIC_BASE_URL=https://your-service.up.railway.app
 LLM_API_BASE=https://api.openai.com/v1
 LLM_API_KEY=...
 LLM_MODEL=gpt-4o-mini
+VISION_API_BASE=https://api.deepseek.com/v1
+VISION_API_KEY=...
+VISION_MODEL=deepseek-flash
+VISION_TIMEOUT=45
+VISION_MAX_IMAGE_BYTES=8388608
 REDIS_URL=...
 PERSONA_PATH=exes/demosense/SKILL.md
 MESSAGE_IDLE_SECONDS=3
@@ -50,6 +55,16 @@ Normal chat messages are buffered per Telegram chat. The bot first estimates a w
 time from fast local rules. Optional LLM-based completion checks can be enabled
 with `MESSAGE_COMPLETION_MODEL_ENABLED=true`, but the default is `false` to avoid
 extra model calls and provider-side failed/cancelled request logs.
+
+Photo messages use the same buffer, so a caption or a short follow-up such as
+`看出来了吗` is analyzed in one turn. The bot downloads only the largest Telegram
+photo and processes one photo per turn. The vision model returns grounded JSON;
+the persona language model produces the user-facing reply. Image bytes and base64
+data are never written to Redis or conversation history.
+
+For DeepSeek, use `VISION_MODEL=deepseek-flash`. If the vision and language calls
+share one DeepSeek account, the vision key and base URL inherit `LLM_API_KEY` and
+`LLM_API_BASE`; keeping the model variable explicit is still recommended.
 
 Useful tuning variables:
 
